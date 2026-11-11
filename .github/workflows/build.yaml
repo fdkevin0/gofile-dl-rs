@@ -42,5 +42,3 @@ jobs:
       publish: >-
         ${{ github.event_name == 'push' &&
           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
-      publish_dockerhub: >-
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

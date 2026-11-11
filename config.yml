@@ -7,7 +7,7 @@ debug: false
 secret_key: "change-this-in-production" # Flask secret key
 
 # Download settings
-base_dir: "/app" # Base directory for downloads
+base_dir: "./output" # Base directory for downloads (overridden by BASE_DIR=/data in Docker)
 default_retries: 3 # Default retry attempts for failed downloads
 retry_delay: 5 # Seconds to wait between retries
 default_throttle: null # Default throttle in KB/s (null for unlimited)

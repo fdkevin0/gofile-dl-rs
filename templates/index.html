@@ -508,6 +508,20 @@
     <script>
       let currentPath = "";
 
+      function escapeHtml(value) {
+        return String(value ?? "").replace(
+          /[&<>"']/g,
+          (ch) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[ch],
+        );
+      }
+
       function getCSRFToken() {
         return document.querySelector('input[name="csrf_token"]').value;
       }
@@ -583,7 +597,7 @@
               const li = document.createElement("li");
               li.className = "list-group-item list-group-item-action";
               li.style.cursor = "pointer";
-              li.innerHTML = '<i class="bi bi-folder me-2"></i>' + dir;
+              li.innerHTML = '<i class="bi bi-folder me-2"></i>' + escapeHtml(dir);
               li.onclick = () => {
                 loadDirectories(currentPath ? currentPath + "/" + dir : dir);
               };
@@ -620,7 +634,7 @@
         toast.role = "alert";
         toast.innerHTML = `
           <div class="d-flex">
-            <div class="toast-body">${message}</div>
+            <div class="toast-body">${escapeHtml(message)}</div>
             <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
           </div>`;
         container.appendChild(toast);
@@ -678,7 +692,14 @@
 
       function loadTasks() {
         fetch("/tasks")
-          .then((response) => response.json())
+          .then((response) => {
+            const rotatedCsrf = response.headers.get("X-CSRF-Token");
+            if (rotatedCsrf) {
+              const csrfInput = document.querySelector('input[name="csrf_token"]');
+              if (csrfInput) csrfInput.value = rotatedCsrf;
+            }
+            return response.json();
+          })
           .then((tasksData) => {
             updateDashboard(tasksData);
             const panel = document.getElementById("tasks-panel");
@@ -813,7 +834,8 @@
         const date = new Date(info.timestamp * 1000).toLocaleString();
         const isPaused = info.paused;
         const pauseButtonText = isPaused ? "Resume" : "Pause";
-        const badgeHTML = `<span class="badge ${statusBadgeClass[info.status] || "bg-secondary"} task-badge">${info.status}</span>`;
+        const safeTaskId = escapeHtml(taskId);
+        const badgeHTML = `<span class="badge ${statusBadgeClass[info.status] || "bg-secondary"} task-badge">${escapeHtml(info.status)}</span>`;
 
         let totalSize = 0;
         if (info.files) info.files.forEach((f) => (totalSize += f.size || 0));
@@ -824,34 +846,34 @@
 
         const errorHTML =
           info.status === "error" && info.error_message
-            ? `<div class="alert alert-danger py-2 my-2 small">${info.error_message}</div>`
+            ? `<div class="alert alert-danger py-2 my-2 small">${escapeHtml(info.error_message)}</div>`
             : "";
 
         body.innerHTML = `
           ${badgeHTML}
           <div class="d-flex justify-content-between card-header-flex">
-            <h5 class="card-title">${info.name} ${sizeDisplay}</h5>
+            <h5 class="card-title">${escapeHtml(info.name)} ${sizeDisplay}</h5>
             <div>
-              <button class="btn btn-sm btn-secondary me-1" title="Remove from list" onclick="removeTask('${taskId}')">
+              <button class="btn btn-sm btn-secondary me-1" title="Remove from list" onclick="removeTask('${safeTaskId}')">
                 <i class="bi bi-x-lg"></i>
               </button>
-              <button class="btn btn-sm btn-danger" title="Delete files from disk" onclick="deleteTask('${taskId}')">
+              <button class="btn btn-sm btn-danger" title="Delete files from disk" onclick="deleteTask('${safeTaskId}')">
                 <i class="bi bi-trash"></i>
               </button>
             </div>
           </div>
           <p class="card-text">
-            <small class="text-muted">URL: ${info.url}</small><br/>
-            <small class="text-muted">Started: ${date}</small>
+            <small class="text-muted">URL: ${escapeHtml(info.url)}</small><br/>
+            <small class="text-muted">Started: ${escapeHtml(date)}</small>
           </p>
           ${errorHTML}
-          <p class="mb-1">Folder Progress: <span class="fw-bold">${info.overall_progress || 0}%</span>
-              | Current: <span class="text-muted">${info.current_folder || "N/A"}</span></p>
+          <p class="mb-1">Folder Progress: <span class="fw-bold">${Number(info.overall_progress) || 0}%</span>
+              | Current: <span class="text-muted">${escapeHtml(info.current_folder || "N/A")}</span></p>
           ${info.download_speed ? `<p class="mb-1">Speed: <span class="text-success fw-bold">${formatFileSize(info.download_speed)}/s</span></p>` : ""}
           <div class="progress mb-3">
             <div class="progress-bar${info.status === "running" ? " progress-bar-striped progress-bar-animated" : ""}" role="progressbar"
-                  style="width: ${info.progress}%;" aria-valuenow="${info.progress}"
-                  aria-valuemin="0" aria-valuemax="100">${info.progress}%</div>
+                  style="width: ${Number(info.progress) || 0}%;" aria-valuenow="${Number(info.progress) || 0}"
+                  aria-valuemin="0" aria-valuemax="100">${Number(info.progress) || 0}%</div>
           </div>`;
 
         if (info.files && info.files.length > 0) {
@@ -883,7 +905,7 @@
             if (folderPath !== "") {
               const folderHeader = document.createElement("div");
               folderHeader.className = "ms-2 mb-1 fw-bold text-primary";
-              folderHeader.innerHTML = `<i class="bi bi-folder me-1"></i>${folderPath}`;
+              folderHeader.innerHTML = `<i class="bi bi-folder me-1"></i>${escapeHtml(folderPath)}`;
               filesList.appendChild(folderHeader);
             }
             fileTree[folderPath].forEach((file) => {
@@ -908,11 +930,11 @@
               fileDiv.innerHTML = `
                 <span>
                   <i class="bi bi-file-earmark me-1"></i>
-                  <strong>${file.name}</strong>:
-                  <span>${statusText}</span>${fileSize}
+                  <strong>${escapeHtml(file.name)}</strong>:
+                  <span>${escapeHtml(statusText)}</span>${fileSize}
                 </span>
                 <div class="progress ms-4" style="height: 5px;">
-                  <div class="progress-bar ${barClass}" role="progressbar" style="width: ${barWidth}%"></div>
+                  <div class="progress-bar ${barClass}" role="progressbar" style="width: ${Number(barWidth) || 0}%"></div>
                 </div>`;
               filesList.appendChild(fileDiv);
             });
@@ -928,10 +950,10 @@
         controls.innerHTML = terminal
           ? ""
           : `
-          <button class="btn btn-warning btn-sm me-2" onclick="pauseTask('${taskId}')">
+          <button class="btn btn-warning btn-sm me-2" onclick="pauseTask('${safeTaskId}')">
             <i class="bi bi-${isPaused ? "play" : "pause"} me-1"></i>${pauseButtonText}
           </button>
-          <button class="btn btn-danger btn-sm" onclick="cancelTask('${taskId}')">
+          <button class="btn btn-danger btn-sm" onclick="cancelTask('${safeTaskId}')">
             <i class="bi bi-x-circle me-1"></i>Cancel
           </button>`;
         body.appendChild(controls);
@@ -949,7 +971,7 @@
       loadTasks();
 
       function removeTask(taskId) {
-        fetch("/remove/" + taskId, { method: "POST" })
+        fetch("/remove/" + encodeURIComponent(taskId), { method: "POST" })
           .then((response) => response.json())
           .then((data) => {
             showToast(data.message || data.error, "info");
@@ -957,7 +979,7 @@
           });
       }
       function cancelTask(taskId) {
-        fetch("/cancel/" + taskId, { method: "POST" })
+        fetch("/cancel/" + encodeURIComponent(taskId), { method: "POST" })
           .then((response) => response.json())
           .then(() => {
             showToast("Task cancelled", "warning");
@@ -965,7 +987,7 @@
           });
       }
       function pauseTask(taskId) {
-        fetch("/pause/" + taskId, { method: "POST" })
+        fetch("/pause/" + encodeURIComponent(taskId), { method: "POST" })
           .then((response) => response.json())
           .then((data) => {
             showToast(`Task ${data.paused ? "paused" : "resumed"}`, "info");
@@ -979,7 +1001,7 @@
             "Are you sure you want to delete this task's files from disk?",
           )
         ) {
-          fetch("/delete/" + taskId, { method: "POST" })
+          fetch("/delete/" + encodeURIComponent(taskId), { method: "POST" })
             .then((response) => response.json())
             .then((data) => {
               showToast(data.message || data.error, "info");

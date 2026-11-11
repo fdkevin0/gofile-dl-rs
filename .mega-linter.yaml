@@ -1,71 +1,27 @@
-# MegaLinter configuration optimized for Python Docker applications
+# MegaLinter configuration for Safe Rust Docker applications
 APPLY_FIXES: all
 
-# Enable only relevant linters for Python Docker applications
 ENABLE:
-  - PYTHON # Python files
-  - DOCKERFILE # Dockerfile
-  - YAML # For docker-compose.yml and config files
-  - MARKDOWN # For documentation
-  - JSON # For config files
-  - BASH # For shell scripts
+  - RUST
+  - DOCKERFILE
+  - YAML
+  - MARKDOWN
+  - JSON
 
-# Specific linter configuration
-PYTHON_BLACK_ARGUMENTS: "--line-length 100"
-PYTHON_FLAKE8_ARGUMENTS: "--max-line-length 100 --extend-ignore=E203,E501"
-PYTHON_ISORT_ARGUMENTS: "--profile black"
-PYTHON_PYLINT_ARGUMENTS: "--disable=C0103,C0111,R0903,W0212,import-error,no-member --max-line-length=100"
-# HEALTHCHECK's CMD is intentionally shell-form (needs ${PORT} substitution
-# and the `|| exit 1` fallback, which JSON exec form can't express) — ignore
-# DL3025 alongside the other DL30xx rules already ignored here.
-# DL3066 flags USER appuser for being a name rather than a numeric UID, but
-# appuser is already pinned to a fixed numeric UID (1000) via useradd -u 1000
-# — the resolvability concern DL3066 warns about doesn't apply, and hadolint
-# itself rates this info-level, not something worth hard-failing CI over.
-DOCKERFILE_HADOLINT_ARGUMENTS: "--ignore DL3008 --ignore DL3013 --ignore DL3018 --ignore DL3003 --ignore DL3025 --ignore DL3066"
+# HEALTHCHECK's CMD uses shell-form for ${PORT} substitution and `|| exit 1`;
+# appuser is pinned to numeric UID 1000 via `useradd -u 1000`.
+DOCKERFILE_HADOLINT_ARGUMENTS: "--ignore DL3008 --ignore DL3018 --ignore DL3003 --ignore DL3025 --ignore DL3066"
 
-# Ruff configuration
-PYTHON_RUFF_FILTER_REGEX_EXCLUDE: '(test_.*\.py)' # Use single quotes to avoid escape issues
-PYTHON_RUFF_DISABLE_ERRORS: true # Don't fail build on ruff errors
-PYTHON_RUFF_DISABLE_ERRORS_IF_LESS_THAN: 10 # Only fail if more than 10 errors
+FILTER_REGEX_EXCLUDE: '(\.git|\.docker|target|pgo-data|output|downloads|\.agents|migration_infographic\.html)'
 
-# Complete pyright suppression - skip all error reporting
-PYTHON_PYRIGHT_ARGUMENTS: "--skipunannotated --skipLibCheck true --reportMissingImports false --reportCallIssue none --reportAttributeAccessIssue none --reportArgumentType false"
-
-# Fixed bandit arguments
-PYTHON_BANDIT_ARGUMENTS: "--recursive --exclude .venv,venv,tests --skip B104,B105"
-
-# Exclude directories and files
-FILTER_REGEX_EXCLUDE: '(\.venv|venv|\.git|\.pytest_cache|__pycache__|\.mypy_cache|\.docker)'
-
-# File-specific rules
-PYTHON_FLAKE8_FILTER_REGEX_EXCLUDE: '(\.venv|venv|test_.*\.py)'
-PYTHON_FLAKE8_ARGUMENTS_PER_MATCH:
-  "run.py": "--max-line-length 120 --extend-ignore=E501"
-
-# Ignore whitespace issues and unused vars in tests
-PYTHON_PYLINT_FILTER_REGEX_EXCLUDE: '(\.venv|venv|test_.*\.py)'
-
-# Use existing configuration files
-PYTHON_FLAKE8_CONFIG_FILE: .flake8
-PYTHON_RUFF_CONFIG_FILE: .ruff.toml
-PYTHON_MYPY_CONFIG_FILE: .mypy.ini
-PYTHON_BANDIT_CONFIG_FILE: .bandit.yml
-
-# Performance optimization
 PARALLEL: true
 SHOW_ELAPSED_TIME: true
 FILEIO_REPORTER: false
 GITHUB_COMMENT_REPORTER: false
 
-# Disable certain linters completely for now
 DISABLE_LINTERS:
-  - COPYPASTE # Disable copy-paste detection
-  - SPELL # Disable spell checking
-  - PYTHON_MYPY # Completely disable mypy
-  - PYTHON_PYRIGHT # Completely disable pyright
+  - COPYPASTE
+  - SPELL
 
-# To disable specific ignored rules for CI
 DISABLE_ERRORS_LINTERS:
-  - PYTHON_RUFF
   - MARKDOWN
