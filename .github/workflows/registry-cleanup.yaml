@@ -9,6 +9,9 @@ jobs:
   clean-ghcr:
     name: Delete old unused container images
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: set lower case repo name
         run: |
@@ -24,6 +27,5 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           cut-off: 7d
           image-names: ${{ env.reponame }}
-          image-tags: "!latest"
           keep-n-most-recent: 5
           tag-selection: untagged

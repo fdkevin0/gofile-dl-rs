@@ -7,7 +7,7 @@
 
 A high-performance, **100% Safe Rust** (`#![forbid(unsafe_code)]`) CLI and Web application for downloading files and nested folder structures from [GoFile.io](https://gofile.io).
 
-Migrated from the legacy Python/Flask codebase using the `migrate-to-rust` architecture workflow with Profile-Guided Optimization (PGO), Struct-of-Arrays (`BatchArenaSoA`) batch kernels, and bit-exact differential output parity.
+Migrated from the legacy Python/Flask project ([martadams89/gofile-dl](https://github.com/martadams89/gofile-dl)) using the `migrate-to-rust` architecture workflow with Profile-Guided Optimization (PGO), Struct-of-Arrays (`BatchArenaSoA`) batch kernels, and bit-exact differential output parity.
 
 ---
 
@@ -58,12 +58,15 @@ cargo build --release
 ### Docker Deployment
 
 ```bash
-docker build -t gofile-dl:latest .
+# Run pre-built multi-arch image from GHCR (amd64 / arm64)
 docker run -d --name gofile-dl \
   -p 2355:2355 \
   -v "$(pwd)/downloads:/data" \
   -v "$(pwd)/config:/config" \
-  gofile-dl:latest
+  ghcr.io/fdkevin0/gofile-dl-rs:latest
+
+# Or build locally from source
+docker build -t gofile-dl:latest .
 ```
 
 ---

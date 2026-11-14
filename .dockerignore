@@ -19,7 +19,5 @@ downloads/
 config/
 migration_infographic.html
 migration_telemetry.json
-.mega-linter.yaml
-mega-linter.log
-megalinter-reports/
+scripts/
 *.log

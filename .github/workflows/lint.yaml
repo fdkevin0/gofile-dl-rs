@@ -4,21 +4,6 @@ name: Lint
 on:
   workflow_dispatch:
   workflow_call:
-  push:
-    branches:
-      - "*"
-    paths:
-      - README.md
-      - CHANGELOG.md
-      - version.txt
-      - ".github/workflows/**"
-      - "src/**"
-      - "tests/**"
-      - "templates/**"
-      - Cargo.toml
-      - Cargo.lock
-      - Dockerfile
-      - config.yml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

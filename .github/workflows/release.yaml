@@ -1,10 +1,8 @@
 name: Release Please
 on:
   # Run on every push to main. release-please maintains a release PR; when that
-  # PR is merged (another push to main) it cuts the GitHub release + tags and
-  # triggers the Docker publish. This closes the fully-automated loop:
-  #   Renovate merges a dep PR -> push to main -> release PR opened/updated
-  #   -> release PR auto-merged -> push to main -> release published.
+  # PR is merged in GitHub UI, the user push re-triggers this workflow to cut
+  # the GitHub release + tags and publish semver Docker images to GHCR.
   push:
     branches:
       - "main"
@@ -25,42 +23,19 @@ jobs:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         id: rp
         with:
-          release-type: simple
-          # Reuse the Renovate PAT/App token: it has contents + pull-requests
-          # write, and using it (instead of the default GITHUB_TOKEN) makes the
-          # release PR's merge re-trigger this workflow so the release actually
-          # gets cut. Falls back to GITHUB_TOKEN if the secret isn't set.
-          token: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Enable auto-merge on the release PR
-        if: ${{ steps.rp.outputs.pr }}
-        env:
-          GH_TOKEN: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
-          RP_PR: ${{ steps.rp.outputs.pr }}
-          REPO: ${{ github.repository }}
-        run: |
-          pr_number=$(echo "$RP_PR" | jq -r '.number')
-          if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
-            echo "Enabling auto-merge on release PR #$pr_number"
-            gh pr merge "$pr_number" --auto --squash --repo "$REPO"
-          fi
+          release-type: rust
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         if: ${{ steps.rp.outputs.release_created }}
-      - name: tag major and minor versions
+      - name: Update major and minor floating tags
         if: ${{ steps.rp.outputs.release_created }}
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git remote add gh-token "https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.event.repository.name }}.git"
-          git tag -d v${{ steps.rp.outputs.major }} || true
-          git tag -d v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }} || true
-          git push origin :v${{ steps.rp.outputs.major }} || true
-          git push origin :v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }} || true
-          git tag -a v${{ steps.rp.outputs.major }} -m "Release v${{ steps.rp.outputs.major }}"
-          git tag -a v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }} -m "Release v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}"
-          git push origin v${{ steps.rp.outputs.major }}
-          git push origin v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa "v${{ steps.rp.outputs.major }}" -m "Release v${{ steps.rp.outputs.major }}"
+          git tag -fa "v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}" -m "Release v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}"
+          git push origin "refs/tags/v${{ steps.rp.outputs.major }}" "refs/tags/v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}" --force
 
   publish-docker-image:
     needs: release-please

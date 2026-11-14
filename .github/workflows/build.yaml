@@ -12,9 +12,11 @@ on:
     paths-ignore:
       - README.md
       - CHANGELOG.md
-      - version.txt
-      - ".github/workflows/**"
+      - "scripts/**"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -34,11 +36,12 @@ jobs:
 
   build:
     if: ${{ !startsWith(github.event.pull_request.title || github.event.head_commit.message || '', 'docs') }}
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/reusable_docker-build-and-push.yaml
     needs: [test]
     secrets: inherit # pass all secrets to the called workflow
     with:
-      # publish only on push to main or develop (releases are handled in another workflow)
-      publish: >-
-        ${{ github.event_name == 'push' &&
-          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      # publish only on push to main (releases are handled in release.yaml)
+      publish: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
