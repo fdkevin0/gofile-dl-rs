@@ -1,0 +1,87 @@
+name: Build And Push Docker image
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        description: Whether to publish the image to GitHub Container Registry (GHCR)
+        required: false
+        default: true
+      version:
+        type: string
+        required: false
+        description: the string to extract semver labels from. If empty, the ref/tag will be used (if on.tag trigger).
+        default: ""
+  workflow_dispatch:
+    inputs:
+      publish:
+        type: boolean
+        description: Whether to publish the image to GitHub Container Registry (GHCR)
+        required: false
+        default: true
+      version:
+        type: string
+        required: false
+        description: the string to extract semver labels from. If empty, the ref/tag will be used (if on.tag trigger).
+        default: ""
+
+jobs:
+  build_and_push:
+    name: Docker Build and Push (GHCR)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Get version from Cargo.toml
+        id: vars_ver
+        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_OUTPUT"
+      - name: Test output
+        run: echo "${{ steps.vars_ver.outputs.version }}"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+            type=semver,pattern={{major}},value=${{ inputs.version }}
+            type=ref,event=branch
+            type=ref,event=branch,suffix=-{{ sha }}
+            type=ref,event=pr
+            type=raw,value=${{ github.ref_name }}-v${{ steps.vars_ver.outputs.version }}-b${{ github.run_number }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+          flavor: |
+            latest=false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Login to GitHub Container Registry
+        if: ${{ inputs.publish }}
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64, linux/arm64
+          push: ${{ inputs.publish }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # use layer caching. Don't forget mode=max to also cache the build image
+          # (vs only the final image - mode: min)
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

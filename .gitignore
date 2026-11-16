@@ -1,0 +1,27 @@
+# Rust / Cargo build & coverage artifacts
+/target/
+**/*.rs.bk
+/pgo-data/
+*.profraw
+*.profdata
+
+# Runtime download & tracker directories
+/output/
+/downloads/
+/config/
+.gofile_tracker_*.json
+
+# Local environment, migration reports & agent workspace files
+.env
+.agents/
+skills-lock.json
+ARCHITECTURAL_BLUEPRINT.md
+migration_telemetry.json
+migration_infographic.html
+
+# Editor, OS & log files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.log

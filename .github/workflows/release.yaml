@@ -1,0 +1,47 @@
+name: Release Please
+on:
+  # Run on every push to main. release-please maintains a release PR; when that
+  # PR is merged in GitHub UI, the user push re-triggers this workflow to cut
+  # the GitHub release + tags and publish semver Docker images to GHCR.
+  push:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        id: rp
+        with:
+          release-type: rust
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: ${{ steps.rp.outputs.release_created }}
+      - name: Update major and minor floating tags
+        if: ${{ steps.rp.outputs.release_created }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa "v${{ steps.rp.outputs.major }}" -m "Release v${{ steps.rp.outputs.major }}"
+          git tag -fa "v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}" -m "Release v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}"
+          git push origin "refs/tags/v${{ steps.rp.outputs.major }}" "refs/tags/v${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}" --force
+
+  publish-docker-image:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    uses: ./.github/workflows/reusable_docker-build-and-push.yaml
+    secrets: inherit # pass all secrets to the called workflow
+    with:
+      publish: true
+      version: ${{ needs.release-please.outputs.tag }}
