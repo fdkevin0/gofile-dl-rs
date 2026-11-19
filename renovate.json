@@ -1,0 +1,60 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":preserveSemverRanges"
+  ],
+  "timezone": "Asia/Shanghai",
+  "ignorePaths": [
+    ".agents/**"
+  ],
+  "minimumReleaseAge": "3 days",
+  "minimumReleaseAgePackageManagerSync": true,
+  "platformAutomerge": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": false,
+    "schedule": [
+      "before 6am on monday"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "Group and automerge non-major ecosystem dependency updates weekly",
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "non-major dependencies",
+      "schedule": [
+        "before 6am on monday"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Group and automerge non-major and digest GitHub Actions updates weekly",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pinDigest",
+        "digest"
+      ],
+      "groupName": "github-actions non-major",
+      "schedule": [
+        "before 6am on monday"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Require manual review for major updates and managers uncovered by PR CI",
+      "matchManagers": [
+        "dockerfile",
+        "rust-toolchain"
+      ],
+      "automerge": false
+    }
+  ]
+}
