@@ -433,7 +433,18 @@
       </div>
 
       <!-- Tasks Panel -->
-      <h2 class="mt-4 h4">Download Tasks</h2>
+      <div class="d-flex justify-content-between align-items-center mt-4 mb-2">
+        <h2 class="h4 mb-0">Download Tasks</h2>
+        <button
+          type="button"
+          id="clear-completed-btn"
+          class="btn btn-outline-success btn-sm"
+          title="Remove completed tasks from list (keeps downloaded files)"
+          disabled
+        >
+          <i class="bi bi-check2-all me-1"></i>Clear Completed
+        </button>
+      </div>
       <div id="tasks-panel">
         <!-- Tasks will be injected here -->
       </div>
@@ -674,13 +685,32 @@
         return document.getElementById("group-select").value;
       }
 
+      function isClearableCompleted(info) {
+        return (
+          info.status === "completed" &&
+          !(
+            Array.isArray(info.files) &&
+            info.files.some((f) => f.progress === -2)
+          )
+        );
+      }
+
       function updateDashboard(tasks) {
-        const stats = { total: 0, completed: 0, active: 0, errors: 0 };
+        const stats = {
+          total: 0,
+          completed: 0,
+          clearable: 0,
+          active: 0,
+          errors: 0,
+        };
         for (const taskId in tasks) {
           stats.total++;
-          const s = tasks[taskId].status;
-          if (s === "completed") stats.completed++;
-          else if (s === "error") stats.errors++;
+          const info = tasks[taskId];
+          const s = info.status;
+          if (s === "completed") {
+            stats.completed++;
+            if (isClearableCompleted(info)) stats.clearable++;
+          } else if (s === "error") stats.errors++;
           else stats.active++;
         }
         document.getElementById("stats-total").textContent = stats.total;
@@ -688,6 +718,8 @@
           stats.completed;
         document.getElementById("stats-active").textContent = stats.active;
         document.getElementById("stats-errors").textContent = stats.errors;
+        document.getElementById("clear-completed-btn").disabled =
+          stats.clearable === 0;
       }
 
       function loadTasks() {
@@ -994,7 +1026,26 @@
       document
         .getElementById("group-select")
         .addEventListener("change", loadTasks);
+      document
+        .getElementById("clear-completed-btn")
+        .addEventListener("click", clearCompletedTasks);
       loadTasks();
+
+      function clearCompletedTasks() {
+        fetch("/tasks/clear-completed", { method: "POST" })
+          .then((response) =>
+            response.json().then((data) => ({ ok: response.ok, data })),
+          )
+          .then(({ ok, data }) => {
+            if (!ok || data.error) {
+              showToast(data.error || "Failed to clear completed tasks", "danger");
+            } else {
+              showToast(data.message || "Cleared completed tasks", "info");
+              loadTasks();
+            }
+          })
+          .catch(() => showToast("Failed to clear completed tasks", "danger"));
+      }
 
       function removeTask(taskId) {
         fetch("/remove/" + encodeURIComponent(taskId), { method: "POST" })

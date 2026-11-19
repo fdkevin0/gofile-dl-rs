@@ -1,6 +1,7 @@
 //! `axum` HTTP web application router implementing the GoFile Downloader dashboard
-//! and REST endpoints (`/`, `/health`, `/tasks`, `/start`, `/progress/{id}`,
-//! `/pause/{id}`, `/cancel/{id}`, `/retry/{id}`, `/remove/{id}`, `/delete/{id}`, `/browse`).
+//! and REST endpoints (`/`, `/health`, `/tasks`, `/tasks/clear-completed`, `/start`,
+//! `/progress/{id}`, `/pause/{id}`, `/cancel/{id}`, `/retry/{id}`, `/remove/{id}`,
+//! `/delete/{id}`, `/browse`).
 //!
 //! Fixes the legacy `POST /` -> `302 /start` -> `405 Method Not Allowed` bug (`app.py:556`),
 //! supports both `multipart/form-data` (browser `FormData`) and URL-encoded forms, and
@@ -47,6 +48,7 @@ pub fn build_router(state: WebAppState) -> Router {
     let protected = Router::new()
         .route("/", get(handle_index_get).post(handle_start))
         .route("/tasks", get(handle_tasks))
+        .route("/tasks/clear-completed", post(handle_clear_completed))
         .route("/browse", get(handle_browse))
         .route("/start", post(handle_start))
         .route("/progress/{task_id}", get(handle_progress))
@@ -67,7 +69,7 @@ pub fn build_router(state: WebAppState) -> Router {
 }
 
 /// Middleware enforcing HTTP Basic Authentication on all protected routes and HMAC CSRF
-/// header verification on mutating routes (`/pause`, `/cancel`, `/retry`, `/remove`, `/delete`).
+/// header verification on mutating routes (`/tasks/clear-completed`, `/pause`, `/cancel`, `/retry`, `/remove`, `/delete`).
 ///
 /// Form-bearing endpoints (`POST /` and `POST /start`) perform CSRF validation inside
 /// [`handle_start`] so both `X-CSRFToken` headers and `csrf_token` form fields are accepted.
@@ -370,6 +372,20 @@ async fn handle_remove(
     } else {
         invalid_task_response()
     }
+}
+
+async fn handle_clear_completed(State(state): State<WebAppState>) -> Response {
+    let removed = state.tasks.clear_completed_tasks();
+    let message = if removed == 1 {
+        "Cleared 1 completed task.".to_string()
+    } else {
+        format!("Cleared {removed} completed tasks.")
+    };
+    Json(json!({
+        "removed": removed,
+        "message": message,
+    }))
+    .into_response()
 }
 
 async fn handle_delete(

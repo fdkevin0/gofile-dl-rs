@@ -1105,3 +1105,275 @@ fn task_persistence_ignores_corrupt_store_and_unconfined_out_path() {
     assert!(base_dir.exists());
     assert!(inside_sentinel.exists());
 }
+
+#[tokio::test]
+async fn clear_completed_endpoint_removes_only_succeeded_tasks_keeps_files_and_persists() {
+    use gofile_dl::downloader::ProgressHooks;
+    use gofile_dl::error::GoFileError;
+    use gofile_dl::tasks::StartTaskRequest;
+    use std::collections::VecDeque;
+    use std::sync::{mpsc, Mutex};
+
+    type StepFn = Box<
+        dyn FnOnce(
+                StartTaskRequest,
+                Arc<AppConfig>,
+                Arc<dyn ProgressHooks>,
+            ) -> Result<(), GoFileError>
+            + Send,
+    >;
+
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path().join("data");
+    let config_dir = tmp.path().join("config");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let (active_started_tx, active_started_rx) = mpsc::channel::<()>();
+    let (active_release_tx, active_release_rx) = mpsc::channel::<()>();
+
+    let steps: Arc<Mutex<VecDeque<StepFn>>> = Arc::new(Mutex::new(VecDeque::from([
+        Box::new(
+            move |_req: StartTaskRequest, cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_name("CleanDone");
+                let dir = cfg.base_dir.join("CleanDone");
+                std::fs::create_dir_all(&dir)?;
+                let fpath = dir.join("file.bin");
+                std::fs::write(&fpath, b"downloaded-content")?;
+                hooks.on_file_progress(&fpath, 100, Some(18), None);
+                hooks.on_overall_progress(100, "CleanDone");
+                Ok(())
+            },
+        ) as StepFn,
+        Box::new(
+            move |_req: StartTaskRequest, cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_name("PartialDone");
+                let ok_path = cfg.base_dir.join("PartialDone").join("ok.bin");
+                let fail_path = cfg.base_dir.join("PartialDone").join("bad.bin");
+                hooks.on_file_progress(&ok_path, 100, Some(10), None);
+                hooks.on_file_progress(&fail_path, -2, Some(10), None);
+                hooks.on_overall_progress(100, "PartialDone");
+                Ok(())
+            },
+        ) as StepFn,
+        Box::new(
+            move |_req: StartTaskRequest, _cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_name("FailedTask");
+                Err(GoFileError::Download {
+                    message: "boom".to_string(),
+                    filename: "a.bin".to_string(),
+                    url: "https://gofile.io/d/fail03".to_string(),
+                })
+            },
+        ) as StepFn,
+        Box::new(
+            move |_req: StartTaskRequest, _cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_name("RunningTask");
+                active_started_tx.send(()).unwrap();
+                let _ = active_release_rx.recv();
+                Ok(())
+            },
+        ) as StepFn,
+    ])));
+
+    let worker: TaskWorkerFn = Arc::new(move |req, cfg, hooks| {
+        let step = steps.lock().unwrap().pop_front().unwrap();
+        step(req, cfg, hooks)
+    });
+
+    let cfg = Arc::new(AppConfig {
+        base_dir: base_dir.clone(),
+        config_dir: Some(config_dir.clone()),
+        secret_key: "clear-completed-secret".to_string(),
+        ..AppConfig::default()
+    });
+    let tasks = TaskManager::with_worker(Arc::clone(&cfg), worker);
+    let app = build_router(WebAppState {
+        config: Arc::clone(&cfg),
+        tasks: tasks.clone(),
+        template_path: None,
+        app_version: "0.1.0-test".to_string(),
+    });
+    let csrf = generate_csrf_token(&cfg.secret_key);
+
+    // Embedded WebUI includes Clear Completed button & endpoint wiring.
+    let res_idx = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = String::from_utf8(
+        res_idx
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains("id=\"clear-completed-btn\""));
+    assert!(html.contains("/tasks/clear-completed"));
+
+    // Start 4 tasks: clean completed, partially-failed completed, error, and active running.
+    let tid_ok = read_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/start")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("X-CSRFToken", &csrf)
+                    .body(Body::from("url=https%3A%2F%2Fgofile.io%2Fd%2Fok01"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(tasks.wait_for_task(&tid_ok, Duration::from_secs(5)));
+
+    let tid_partial = read_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/start")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("X-CSRFToken", &csrf)
+                    .body(Body::from("url=https%3A%2F%2Fgofile.io%2Fd%2Fpartial02"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(tasks.wait_for_task(&tid_partial, Duration::from_secs(5)));
+
+    let tid_fail = read_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/start")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("X-CSRFToken", &csrf)
+                    .body(Body::from("url=https%3A%2F%2Fgofile.io%2Fd%2Ffail03"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(tasks.wait_for_task(&tid_fail, Duration::from_secs(5)));
+
+    let tid_active = read_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/start")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("X-CSRFToken", &csrf)
+                    .body(Body::from("url=https%3A%2F%2Fgofile.io%2Fd%2Factive04"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    active_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    // Missing CSRF token returns 400.
+    let res_no_csrf = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tasks/clear-completed")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_no_csrf.status(), StatusCode::BAD_REQUEST);
+
+    // Clear completed removes only tid_ok (keeps partial, error, active, and downloaded files).
+    let res_clear = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tasks/clear-completed")
+                .header("X-CSRFToken", &csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_clear.status(), StatusCode::OK);
+    let clear_json = read_json(res_clear).await;
+    assert_eq!(clear_json["removed"], 1);
+    assert_eq!(clear_json["message"], "Cleared 1 completed task.");
+
+    // Second clear reports 0 removed.
+    let res_clear_again = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tasks/clear-completed")
+                .header("X-CSRFToken", &csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_clear_again.status(), StatusCode::OK);
+    let clear_again_json = read_json(res_clear_again).await;
+    assert_eq!(clear_again_json["removed"], 0);
+    assert_eq!(clear_again_json["message"], "Cleared 0 completed tasks.");
+
+    let remaining = read_json(
+        app.oneshot(
+            Request::builder()
+                .uri("/tasks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    let remaining_obj = remaining.as_object().unwrap();
+    assert!(!remaining_obj.contains_key(&tid_ok));
+    assert!(remaining_obj.contains_key(&tid_partial));
+    assert!(remaining_obj.contains_key(&tid_fail));
+    assert!(remaining_obj.contains_key(&tid_active));
+    assert!(base_dir.join("CleanDone").join("file.bin").exists());
+
+    // Finish active task and verify cleared state persists across restart.
+    active_release_tx.send(()).unwrap();
+    assert!(tasks.wait_for_task(&tid_active, Duration::from_secs(5)));
+
+    let restarted = TaskManager::with_worker(cfg, Arc::new(|_, _, _| Ok(())));
+    let persisted_map = restarted.list_tasks();
+    assert!(!persisted_map.contains_key(&tid_ok));
+    assert!(persisted_map.contains_key(&tid_partial));
+    assert!(persisted_map.contains_key(&tid_fail));
+    assert_eq!(persisted_map[&tid_active].status, "completed");
+}
