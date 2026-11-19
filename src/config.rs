@@ -101,6 +101,9 @@ pub struct AppConfig {
     /// Root download directory used by `/browse`, `/health`, and default downloads.
     #[serde(default = "default_base_dir")]
     pub base_dir: PathBuf,
+    /// Optional persistent state directory (`CONFIG_DIR`) for `tasks.json` and trackers.
+    #[serde(default)]
+    pub config_dir: Option<PathBuf>,
     /// Secret key used to sign stateless CSRF tokens.
     #[serde(default = "default_secret_key")]
     pub secret_key: String,
@@ -171,6 +174,7 @@ impl Default for AppConfig {
             port: default_port(),
             host: default_host(),
             base_dir: default_base_dir(),
+            config_dir: None,
             secret_key: default_secret_key(),
             default_retries: default_retries(),
             retry_delay: default_retry_delay(),
@@ -211,7 +215,11 @@ impl AppConfig {
                 path.display()
             ))
         })?;
-        Ok(parsed.unwrap_or_default())
+        let mut cfg = parsed.unwrap_or_default();
+        cfg.config_dir = cfg
+            .config_dir
+            .filter(|p| !p.to_string_lossy().trim().is_empty());
+        Ok(cfg)
     }
 
     /// Applies environment overrides from an explicit key-value map (deterministic in tests).
@@ -230,6 +238,9 @@ impl AppConfig {
         }
         if let Some(v) = non_empty_env(env, "BASE_DIR") {
             self.base_dir = PathBuf::from(v);
+        }
+        if let Some(v) = non_empty_env(env, "CONFIG_DIR") {
+            self.config_dir = Some(PathBuf::from(v));
         }
         if let Some(v) = non_empty_env(env, "SECRET_KEY") {
             self.secret_key = v.to_string();
@@ -294,4 +305,18 @@ pub fn read_app_version(version_file: &Path) -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yaml_empty_config_dir_normalizes_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let yaml_empty = tmp.path().join("empty_cfg.yml");
+        fs::write(&yaml_empty, "config_dir: \"   \"\n").unwrap();
+        let parsed = AppConfig::load_yaml_or_default(Some(&yaml_empty)).unwrap();
+        assert_eq!(parsed.config_dir, None);
+    }
 }

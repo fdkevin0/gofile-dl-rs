@@ -1,6 +1,6 @@
 //! `axum` HTTP web application router implementing the GoFile Downloader dashboard
 //! and REST endpoints (`/`, `/health`, `/tasks`, `/start`, `/progress/{id}`,
-//! `/pause/{id}`, `/cancel/{id}`, `/remove/{id}`, `/delete/{id}`, `/browse`).
+//! `/pause/{id}`, `/cancel/{id}`, `/retry/{id}`, `/remove/{id}`, `/delete/{id}`, `/browse`).
 //!
 //! Fixes the legacy `POST /` -> `302 /start` -> `405 Method Not Allowed` bug (`app.py:556`),
 //! supports both `multipart/form-data` (browser `FormData`) and URL-encoded forms, and
@@ -13,7 +13,8 @@ use crate::security::{
     verify_basic_auth, verify_csrf_token,
 };
 use crate::tasks::{
-    browse_confined_directory, resolve_confined_output_dir, StartTaskRequest, TaskManager,
+    browse_confined_directory, resolve_confined_output_dir, RetryTaskStatus, StartTaskRequest,
+    TaskManager,
 };
 use axum::body::Bytes;
 use axum::extract::{FromRequest, Multipart, Path as AxumPath, Query, Request, State};
@@ -51,6 +52,7 @@ pub fn build_router(state: WebAppState) -> Router {
         .route("/progress/{task_id}", get(handle_progress))
         .route("/pause/{task_id}", post(handle_pause))
         .route("/cancel/{task_id}", post(handle_cancel))
+        .route("/retry/{task_id}", post(handle_retry))
         .route("/remove/{task_id}", post(handle_remove))
         .route("/delete/{task_id}", post(handle_delete))
         .route_layer(middleware::from_fn_with_state(
@@ -65,7 +67,7 @@ pub fn build_router(state: WebAppState) -> Router {
 }
 
 /// Middleware enforcing HTTP Basic Authentication on all protected routes and HMAC CSRF
-/// header verification on mutating routes (`/pause`, `/cancel`, `/remove`, `/delete`).
+/// header verification on mutating routes (`/pause`, `/cancel`, `/retry`, `/remove`, `/delete`).
 ///
 /// Form-bearing endpoints (`POST /` and `POST /start`) perform CSRF validation inside
 /// [`handle_start`] so both `X-CSRFToken` headers and `csrf_token` form fields are accepted.
@@ -337,6 +339,25 @@ async fn handle_cancel(
         Json(json!({"task_id": task_id, "status": "cancelled"})).into_response()
     } else {
         invalid_task_response()
+    }
+}
+
+async fn handle_retry(
+    State(state): State<WebAppState>,
+    AxumPath(task_id): AxumPath<String>,
+) -> Response {
+    match state.tasks.retry_task(&task_id) {
+        RetryTaskStatus::Restarted => (
+            StatusCode::ACCEPTED,
+            Json(json!({"task_id": task_id, "status": "running"})),
+        )
+            .into_response(),
+        RetryTaskStatus::AlreadyActive => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Task is already active"})),
+        )
+            .into_response(),
+        RetryTaskStatus::NotFound => invalid_task_response(),
     }
 }
 
