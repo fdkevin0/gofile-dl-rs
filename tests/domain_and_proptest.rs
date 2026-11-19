@@ -1,5 +1,5 @@
-//! Domain unit tests, legacy `test_basic.py` parity tests, CJK & traversal regression
-//! tests, and `proptest` property-based fuzzing suites.
+//! Domain unit tests, CJK & traversal regression tests, and `proptest`
+//! property-based fuzzing suites.
 
 use gofile_dl::client::{
     ByteStreamResponse, ContentChild, ContentNode, GoFileClient, HttpTransport,
@@ -8,7 +8,6 @@ use gofile_dl::error::{is_connection_reset_message, GoFileError};
 use gofile_dl::sanitize::{
     normalize_folder_name, safe_child_path, sanitize_filename, strip_emojis,
 };
-use gofile_dl::soa::{run_seed_idiomatic, run_seed_soa, BatchArenaSoA};
 use gofile_dl::token::{
     generate_website_token_at, hash_password, parse_content_id, WebsiteTokenConfig,
     DEFAULT_LANGUAGE, DEFAULT_USER_AGENT, DEFAULT_WT_SALT,
@@ -265,18 +264,5 @@ proptest! {
         let twice = normalize_folder_name(&once, None);
         prop_assert_eq!(once.as_str(), base.as_str());
         prop_assert_eq!(twice.as_str(), base.as_str());
-    }
-
-    #[test]
-    fn prop_soa_matches_idiomatic_exact(seed in 0_u64..500_u64) {
-        let tmp = tempdir().unwrap();
-        let r_safe = run_seed_idiomatic(seed, 24, &tmp.path().join("safe")).unwrap();
-        let mut arena = BatchArenaSoA::with_capacity(24);
-        let r_soa = run_seed_soa(seed, 24, &tmp.path().join("soa"), &mut arena).unwrap();
-        prop_assert_eq!(r_safe.digest, r_soa.digest);
-        prop_assert_eq!(r_safe.parsed_valid_count, r_soa.parsed_valid_count);
-        prop_assert_eq!(r_safe.skipped_incremental_count, r_soa.skipped_incremental_count);
-        prop_assert_eq!(r_safe.matched_renamed_count, r_soa.matched_renamed_count);
-        prop_assert!((r_safe.total_throttle_sleep - r_soa.total_throttle_sleep).abs() <= 1e-12);
     }
 }

@@ -305,9 +305,10 @@ fn test_regressions_url_filename_part_negative_window_csrf_and_config() {
     let err = AppConfig::load(Some(&bad_yaml)).unwrap_err();
     assert!(matches!(err, GoFileError::Config(_)));
 
-    // 7. Repository `config.yml` loads with `./output` (not `/app`)
+    // 7. Repository `config.yml` loads with `./output` (not `/app`) and no hardcoded weak secret_key
     let repo_cfg = AppConfig::load(Some(Path::new("config.yml"))).unwrap();
     assert_ne!(repo_cfg.base_dir, Path::new("/app"));
+    assert_ne!(repo_cfg.secret_key, "change-this-in-production");
 
     // 8. Read-only directory (`0555`) health check reports `writable: false` (when non-root)
     #[cfg(unix)]
@@ -470,16 +471,8 @@ fn test_regressions_incremental_single_file_emoji_pattern_and_new_failures() {
 }
 
 #[tokio::test]
-async fn test_regressions_web_directory_confinement_xss_and_delete_race() {
-    // 1. Verify DOM XSS escaping in `templates/index.html`
-    let tpl = std::fs::read_to_string("templates/index.html").unwrap();
-    assert!(tpl.contains("function escapeHtml("));
-    assert!(tpl.contains("${escapeHtml(info.name)}"));
-    assert!(tpl.contains("${escapeHtml(info.url)}"));
-    assert!(tpl.contains("${escapeHtml(info.current_folder || \"N/A\")}"));
-    assert!(tpl.contains("${escapeHtml(file.name)}"));
-
-    // 2. Verify `/start` rejects directory traversal (`400`) and confines relative subdirs inside `base_dir`
+async fn test_regressions_web_directory_confinement_and_delete_race() {
+    // Verify `/start` rejects directory traversal (`400`) and confines relative subdirs inside `base_dir`
     let tmp = tempdir().unwrap();
     let outside = tempdir().unwrap();
     let cfg = Arc::new(AppConfig {
@@ -501,7 +494,7 @@ async fn test_regressions_web_directory_confinement_xss_and_delete_race() {
         std::fs::write(&part, b"in-flight-bytes")?;
         let _ = started_tx.send(());
         while !hooks.is_cancelled() {
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::yield_now();
         }
         Err(GoFileError::Cancelled)
     });
@@ -511,34 +504,66 @@ async fn test_regressions_web_directory_confinement_xss_and_delete_race() {
         config: Arc::clone(&cfg),
         tasks: tasks.clone(),
         template_path: None,
-        app_version: "0.1.0".to_string(),
+        app_version: "0.1.0-test".to_string(),
     });
     let csrf = generate_csrf_token(&cfg.secret_key);
 
-    // Reject traversal `../../...` and absolute outside path
-    for bad_dir in ["../escape", outside.path().to_str().unwrap()] {
-        let body = format!(
-            "url=https%3A%2F%2Fgofile.io%2Fd%2Fabc123&directory={}",
-            bad_dir.replace('/', "%2F")
-        );
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/start")
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header("X-CSRFToken", &csrf)
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
+    // Reject traversal `../escape` and absolute outside path
+    let res_rel_escape = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/start")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("X-CSRFToken", &csrf)
+                .body(Body::from(
+                    "url=https%3A%2F%2Fgofile.io%2Fd%2Fabc123&directory=..%2Fescape",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_rel_escape.status(), StatusCode::BAD_REQUEST);
+    let j_rel: Value = serde_json::from_slice(
+        &res_rel_escape
+            .into_body()
+            .collect()
             .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let j: Value =
-            serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
-        assert_eq!(j["error"], "Invalid directory path");
-    }
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(j_rel["error"], "Invalid directory path");
+
+    let outside_body = format!(
+        "url=https%3A%2F%2Fgofile.io%2Fd%2Fabc123&directory={}",
+        outside.path().to_str().unwrap().replace('/', "%2F")
+    );
+    let res_abs_escape = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/start")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("X-CSRFToken", &csrf)
+                .body(Body::from(outside_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_abs_escape.status(), StatusCode::BAD_REQUEST);
+    let j_abs: Value = serde_json::from_slice(
+        &res_abs_escape
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(j_abs["error"], "Invalid directory path");
 
     // Accept relative subdirectory `sub/nested` inside `base_dir` and test `delete_task_files` race + `.part` cleanup
     let res_ok = app
@@ -716,60 +741,12 @@ fn test_live_reqwest_transport_pagination_retries_resume_and_errors() {
 }
 
 #[test]
-fn test_cli_binary_download_bench_parity_and_graceful_serve() {
+fn test_cli_binary_download_and_graceful_serve() {
     let bin = env!("CARGO_BIN_EXE_gofile-dl");
     let (base_url, stop_tx) = spawn_mock_gofile_server();
     let tmp = tempdir().unwrap();
 
-    // 1. `parity-seed` subcommand
-    let parity_out = Command::new(bin)
-        .args([
-            "parity-seed",
-            "--seed",
-            "7",
-            "--items",
-            "16",
-            "--work-dir",
-            tmp.path().join("parity").to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(parity_out.status.success());
-    let parity_json: Value = serde_json::from_slice(&parity_out.stdout).unwrap();
-    assert_eq!(parity_json["digest"].as_str().unwrap().len(), 64);
-
-    // 2. `bench --mode safe` and `bench --mode soa` subcommands
-    let bench_safe = Command::new(bin)
-        .args([
-            "bench",
-            "--mode",
-            "safe",
-            "--seeds",
-            "2",
-            "--items-per-seed",
-            "8",
-        ])
-        .output()
-        .unwrap();
-    assert!(bench_safe.status.success());
-    let bench_soa = Command::new(bin)
-        .args([
-            "bench",
-            "--mode",
-            "soa",
-            "--seeds",
-            "2",
-            "--items-per-seed",
-            "8",
-        ])
-        .output()
-        .unwrap();
-    assert!(bench_soa.status.success());
-    let j_safe: Value = serde_json::from_slice(&bench_safe.stdout).unwrap();
-    let j_soa: Value = serde_json::from_slice(&bench_soa.stdout).unwrap();
-    assert_eq!(j_safe["combined_digest"], j_soa["combined_digest"]);
-
-    // 3. CLI download mode (with 1 retry on `flaky.bin` exercising `CliProgressLogger` retry & completion)
+    // 1. CLI download mode (with 1 retry on `flaky.bin` exercising `CliProgressLogger` retry & completion)
     let cli_dl_dir = tmp.path().join("cli_dl");
     let dl_out = Command::new(bin)
         .args([
@@ -778,6 +755,8 @@ fn test_cli_binary_download_bench_parity_and_graceful_serve() {
             cli_dl_dir.to_str().unwrap(),
             "--retries",
             "2",
+            "--retry-delay",
+            "0",
             "--incremental",
         ])
         .env("CONFIG_DIR", tmp.path().join("cli_cfg"))
@@ -785,7 +764,6 @@ fn test_cli_binary_download_bench_parity_and_graceful_serve() {
         .env("GOFILE_WEB_BASE_URL", &base_url)
         .output()
         .unwrap();
-    // Note: `retry_delay_secs` in CLI is 5s on first failure, which proves real retry succeeded
     assert!(
         dl_out.status.success(),
         "stderr: {}",

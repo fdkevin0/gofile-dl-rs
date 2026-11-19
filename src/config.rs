@@ -1,9 +1,7 @@
 //! Unified YAML, `.env`, and environment-variable configuration loader.
 //!
-//! Resolves the legacy `app.py` / `config.yml` inconsistency where `DEFAULT_CONFIG["base_dir"]`
-//! defaulted to `"/"`, `config.yml` specified `"/app"`, and `/health` + `/browse` hardcoded
-//! `"/data"` while ignoring `config.yml`. Also wires `task_expiry` for automatic terminal
-//! task eviction in long-running server deployments.
+//! Resolves download/server paths (`base_dir`, `config_dir`), authentication and
+//! CSRF settings, retry parameters, and automatic terminal task eviction (`task_expiry`).
 
 use crate::error::GoFileError;
 use serde::{Deserialize, Serialize};
@@ -285,26 +283,6 @@ fn non_empty_env<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a 
         .map(String::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-}
-
-/// Reads the application version from `version.txt`, falling back to `CARGO_PKG_VERSION`.
-///
-/// # Examples
-///
-/// ```
-/// use gofile_dl::config::read_app_version;
-/// use std::path::Path;
-///
-/// let v = read_app_version(Path::new("/nonexistent/version.txt"));
-/// assert!(!v.is_empty());
-/// ```
-#[must_use]
-pub fn read_app_version(version_file: &Path) -> String {
-    fs::read_to_string(version_file)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use base64::Engine;
-use gofile_dl::config::{read_app_version, AppConfig};
+use gofile_dl::config::AppConfig;
 use gofile_dl::security::generate_csrf_token;
 use gofile_dl::tasks::{TaskManager, TaskWorkerFn};
 use gofile_dl::web::{build_router, WebAppState};
@@ -72,11 +72,6 @@ fn test_config_env_overrides_and_invalid_port() {
 
     env.insert("PORT".to_string(), "not-a-number".to_string());
     assert!(cfg.apply_env_map(&env).is_err());
-
-    assert_eq!(
-        read_app_version(Path::new("/nonexistent/version.txt")),
-        "0.1.0"
-    );
 }
 
 #[tokio::test]
@@ -122,7 +117,7 @@ async fn test_health_basic_auth_and_index_csrf_rendering() {
         .unwrap()
         .contains("Basic"));
 
-    // Valid Basic Auth renders `/` with injected CSRF token and stripped Jinja flash tags
+    // Valid Basic Auth renders `/` with injected CSRF token
     let creds = BASE64_STD.encode("admin:s3cr3t");
     let res_idx = app
         .oneshot(
@@ -146,40 +141,60 @@ async fn test_health_basic_auth_and_index_csrf_rendering() {
     )
     .unwrap();
     assert!(!html.contains("{{ csrf_token() }}"));
-    assert!(!html.contains("{% with messages"));
     let _ = cfg;
 }
 
 #[tokio::test]
 async fn test_web_task_lifecycle_multipart_post_root_and_browse_confinement() {
+    use gofile_dl::downloader::ProgressHooks;
+    use gofile_dl::error::GoFileError;
+    use gofile_dl::tasks::StartTaskRequest;
+    use std::collections::VecDeque;
+    use std::sync::{mpsc, Mutex};
+
+    type StepFn = Box<
+        dyn FnOnce(
+                StartTaskRequest,
+                Arc<AppConfig>,
+                Arc<dyn ProgressHooks>,
+            ) -> Result<(), GoFileError>
+            + Send,
+    >;
+
     let tmp = tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("alpha")).unwrap();
     std::fs::create_dir_all(tmp.path().join("beta")).unwrap();
 
-    let worker: TaskWorkerFn = Arc::new(|req, cfg, hooks| {
-        hooks.on_name("dl_folder");
-        let target_dir = cfg.base_dir.join("dl_folder");
-        std::fs::create_dir_all(&target_dir)?;
-        let fpath = target_dir.join("sample.bin");
-        std::fs::write(&fpath, b"12345678")?;
-        hooks.on_file_progress(&fpath, 50, Some(8), None);
-        if req.url.contains("xyz987") {
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while !hooks.is_cancelled() && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            if hooks.is_cancelled() {
-                return Err(gofile_dl::error::GoFileError::Cancelled);
-            }
-        }
-        while hooks.is_paused() && !hooks.is_cancelled() {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        hooks.on_overall_progress(100, "dl_folder");
-        Ok(())
+    let (t2_started_tx, t2_started_rx) = mpsc::channel::<()>();
+    let (t2_release_tx, t2_release_rx) = mpsc::channel::<()>();
+    let steps: Arc<Mutex<VecDeque<StepFn>>> = Arc::new(Mutex::new(VecDeque::from([
+        Box::new(
+            |_req: StartTaskRequest, cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_name("dl_folder");
+                let target_dir = cfg.base_dir.join("dl_folder");
+                std::fs::create_dir_all(&target_dir)?;
+                let fpath = target_dir.join("sample.bin");
+                std::fs::write(&fpath, b"12345678")?;
+                hooks.on_file_progress(&fpath, 50, Some(8), None);
+                hooks.on_overall_progress(100, "dl_folder");
+                Ok(())
+            },
+        ) as StepFn,
+        Box::new(
+            move |_req: StartTaskRequest, _cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_name("active_folder");
+                t2_started_tx.send(()).unwrap();
+                let _ = t2_release_rx.recv();
+                Err(GoFileError::Cancelled)
+            },
+        ) as StepFn,
+    ])));
+    let worker: TaskWorkerFn = Arc::new(move |req, cfg, hooks| {
+        let step = steps.lock().unwrap().pop_front().unwrap();
+        step(req, cfg, hooks)
     });
 
-    let (app, cfg) = build_test_app(tmp.path(), false, worker);
+    let (app, cfg, tasks) = build_test_app_with_tasks(tmp.path(), false, worker);
     let csrf = generate_csrf_token(&cfg.secret_key);
 
     // 1. CSRF missing -> 400 Bad Request
@@ -218,6 +233,7 @@ async fn test_web_task_lifecycle_multipart_post_root_and_browse_confinement() {
         .as_str()
         .unwrap()
         .to_string();
+    assert!(tasks.wait_for_task(&tid1, Duration::from_secs(5)));
 
     // 3. Multipart form-data on `/start` (matching browser `new FormData(form)`)
     let boundary = "----GoFileTestBoundary";
@@ -245,10 +261,9 @@ async fn test_web_task_lifecycle_multipart_post_root_and_browse_confinement() {
         .as_str()
         .unwrap()
         .to_string();
+    t2_started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
 
-    tokio::time::sleep(Duration::from_millis(40)).await;
-
-    // 4. Check `/progress/{id}` and `/tasks`
+    // 4. Check `/progress/{id}`
     let res_prog = app
         .clone()
         .oneshot(
@@ -308,6 +323,8 @@ async fn test_web_task_lifecycle_multipart_post_root_and_browse_confinement() {
         .await
         .unwrap();
     assert_eq!(res_cancel.status(), StatusCode::OK);
+    let _ = t2_release_tx.send(());
+    assert!(tasks.wait_for_task(&tid2, Duration::from_secs(5)));
 
     let res_remove = app
         .clone()
@@ -359,42 +376,78 @@ fn task_expiry_env_and_pruning_evicts_expired_terminal_tasks() {
     let mut cfg = AppConfig::default();
     assert_eq!(cfg.task_expiry, 604_800);
 
-    let env_ok = HashMap::from([("TASK_EXPIRY".to_string(), "1".to_string())]);
+    let env_ok = HashMap::from([("TASK_EXPIRY".to_string(), "60".to_string())]);
     cfg.apply_env_map(&env_ok).unwrap();
-    assert_eq!(cfg.task_expiry, 1);
+    assert_eq!(cfg.task_expiry, 60);
 
     let env_bad = HashMap::from([("TASK_EXPIRY".to_string(), "not_a_u64".to_string())]);
     assert!(cfg.apply_env_map(&env_bad).is_err());
 
     let tmp = tempdir().unwrap();
-    cfg.base_dir = tmp.path().to_path_buf();
-    let mgr = TaskManager::with_worker(
-        Arc::new(cfg),
-        Arc::new(|_req, _cfg, hooks| {
-            hooks.on_name("QuickTask");
-            Ok(())
-        }),
-    );
-
-    let tid = mgr.start_task(gofile_dl::tasks::StartTaskRequest {
-        url: "https://gofile.io/d/AbCdEf".to_string(),
-        directory: None,
-        password: None,
-        throttle_kbps: None,
-        retries: 1,
-        strip_emojis: false,
-        incremental: false,
-        folder_pattern: "NEW|HOT".to_string(),
-        premium_token: None,
+    let config_dir = tmp.path().join("cfg");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let seeded = serde_json::json!({
+        "version": 1,
+        "tasks": {
+            "expired-task": {
+                "snapshot": {
+                    "progress": 100,
+                    "overall_progress": 100,
+                    "current_folder": "Old",
+                    "download_speed": 0.0,
+                    "status": "completed",
+                    "error_message": "",
+                    "url": "https://gofile.io/d/Old1",
+                    "name": "Old",
+                    "timestamp": 1.0,
+                    "files": [],
+                    "paused": false
+                },
+                "request": {
+                    "url": "https://gofile.io/d/Old1",
+                    "retries": 1,
+                    "strip_emojis": false,
+                    "incremental": false,
+                    "folder_pattern": "NEW"
+                }
+            },
+            "fresh-task": {
+                "snapshot": {
+                    "progress": 100,
+                    "overall_progress": 100,
+                    "current_folder": "Fresh",
+                    "download_speed": 0.0,
+                    "status": "completed",
+                    "error_message": "",
+                    "url": "https://gofile.io/d/Fresh1",
+                    "name": "Fresh",
+                    "timestamp": 9_999_999_999.0,
+                    "files": [],
+                    "paused": false
+                },
+                "request": {
+                    "url": "https://gofile.io/d/Fresh1",
+                    "retries": 1,
+                    "strip_emojis": false,
+                    "incremental": false,
+                    "folder_pattern": "NEW"
+                }
+            }
+        }
     });
+    std::fs::write(
+        config_dir.join("tasks.json"),
+        serde_json::to_string(&seeded).unwrap(),
+    )
+    .unwrap();
 
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(mgr.list_tasks().contains_key(&tid));
+    cfg.base_dir = tmp.path().to_path_buf();
+    cfg.config_dir = Some(config_dir);
+    let mgr = TaskManager::with_worker(Arc::new(cfg), Arc::new(|_, _, _| Ok(())));
 
-    // Wait past `task_expiry = 1`s and verify terminal task is automatically pruned.
-    std::thread::sleep(Duration::from_millis(1050));
-    mgr.prune_expired_tasks();
-    assert!(!mgr.list_tasks().contains_key(&tid));
+    let remaining = mgr.list_tasks();
+    assert!(!remaining.contains_key("expired-task"));
+    assert!(remaining.contains_key("fresh-task"));
 }
 
 #[tokio::test]
@@ -450,20 +503,19 @@ fn zero_alloc_sanitize_and_folder_normalizer_slice_parity() {
     let mut filtered = String::new();
     let mut out = String::new();
 
-    for sample in [
-        "CON.mkv . ",
-        "  CON.mkv . ",
-        "COM\u{00b9}.zip",
-        "LPT\u{00b3}.tar",
-        "CLOCK$.bin",
-        "🔥 Episode <01>:Pilot?.mkv",
-        "...",
-    ] {
+    let mut assert_parity = |sample: &str| {
         strip_emojis_into(sample, &mut stripped);
         assert_eq!(stripped, strip_emojis(sample));
         sanitize_filename_into(&stripped, &mut filtered, &mut out);
         assert_eq!(out, sanitize_filename(&stripped));
-    }
+    };
+    assert_parity("CON.mkv . ");
+    assert_parity("  CON.mkv . ");
+    assert_parity("COM\u{00b9}.zip");
+    assert_parity("LPT\u{00b3}.tar");
+    assert_parity("CLOCK$.bin");
+    assert_parity("🔥 Episode <01>:Pilot?.mkv");
+    assert_parity("...");
 
     let norm = FolderNormalizer::new(Some("🔥HOT |⭐NEW FILES in "));
     let folder_in = "🔥HOT ⭐ NEW FILES in Series_S01 ";

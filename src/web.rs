@@ -3,9 +3,9 @@
 //! `/progress/{id}`, `/pause/{id}`, `/cancel/{id}`, `/retry/{id}`, `/remove/{id}`,
 //! `/delete/{id}`, `/browse`).
 //!
-//! Fixes the legacy `POST /` -> `302 /start` -> `405 Method Not Allowed` bug (`app.py:556`),
-//! supports both `multipart/form-data` (browser `FormData`) and URL-encoded forms, and
-//! rotates `X-CSRF-Token` on `GET /tasks` so long-lived dashboard tabs never expire mid-session.
+//! Supports both `multipart/form-data` (browser `FormData`) and URL-encoded forms
+//! on `POST /` and `POST /start`, and rotates `X-CSRF-Token` on `GET /tasks` so
+//! long-lived dashboard tabs never expire mid-session.
 
 use crate::config::AppConfig;
 use crate::sanitize::DEFAULT_FOLDER_PATTERNS;

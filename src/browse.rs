@@ -243,7 +243,7 @@ fn verify_symlink_ancestor(canon_base: &Path, normalized: &Path) -> Result<PathB
 }
 
 /// Resolves `requested` inside canonical `base_dir`, clamping any `..` or external
-/// absolute path back to `base_dir` (matching `app.py:389-415`).
+/// absolute path back to `base_dir`.
 ///
 /// # Examples
 ///

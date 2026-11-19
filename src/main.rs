@@ -1,25 +1,19 @@
 #![forbid(unsafe_code)]
 //! Command-line and web-server entry point for `gofile-dl`.
 //!
-//! Supports four execution modes:
-//! 1. **Legacy-Compatible CLI Download**: `gofile-dl <URL_OR_ID> [-d DIR] [-p PASS] ...`
+//! Supports two execution modes:
+//! 1. **CLI Download**: `gofile-dl <URL_OR_ID> [-d DIR] [-p PASS] ...`
 //! 2. **Web Dashboard Server**: `gofile-dl serve [--config config.yml] [--host H] [--port P]`
-//! 3. **4-Stage Throughput Benchmark**: `gofile-dl bench --mode <safe|soa>`
-//! 4. **A/B Differential Parity Runner**: `gofile-dl parity-seed --seed S --items N --work-dir W`
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use gofile_dl::client::{GoFileClient, ReqwestTransport};
-use gofile_dl::config::{read_app_version, AppConfig};
+use gofile_dl::config::AppConfig;
 use gofile_dl::downloader::{execute_download, DownloadOptions, ProgressHooks};
 use gofile_dl::error::GoFileError;
 use gofile_dl::sanitize::DEFAULT_FOLDER_PATTERNS;
-use gofile_dl::soa::{run_seed_idiomatic, run_seed_soa, BatchArenaSoA};
 use gofile_dl::tasks::TaskManager;
-use gofile_dl::token::{encode_sha256_hex, WebsiteTokenConfig};
+use gofile_dl::token::WebsiteTokenConfig;
 use gofile_dl::web::{build_router, WebAppState};
-use serde_json::json;
-use sha2::{Digest, Sha256};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -33,15 +27,15 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// GoFile share URL or bare content ID (legacy CLI mode).
+    /// GoFile share URL or bare content ID.
     #[arg(value_name = "URL")]
     url: Option<String>,
 
-    /// Output directory for downloaded files (`-d` compatible with legacy `run.py`).
+    /// Output directory for downloaded files.
     #[arg(short = 'd', long = "dir")]
     dir: Option<PathBuf>,
 
-    /// Password for protected GoFile shares (`-p` compatible with legacy `run.py`).
+    /// Password for protected GoFile shares.
     #[arg(short = 'p', long = "password")]
     password: Option<String>,
 
@@ -52,6 +46,10 @@ struct Cli {
     /// Retry attempts for failed file downloads (0-10).
     #[arg(long = "retries", default_value_t = 3)]
     retries: u32,
+
+    /// Delay in seconds between transfer retry attempts.
+    #[arg(long = "retry-delay", env = "RETRY_DELAY", default_value_t = 5)]
+    retry_delay: u64,
 
     /// Strip emojis and pictographs from remote folder and file names.
     #[arg(long = "strip-emojis")]
@@ -84,39 +82,6 @@ enum Commands {
         #[arg(long = "port")]
         port: Option<u16>,
     },
-    /// Execute deterministic multi-seed throughput benchmark (`safe` vs `soa`).
-    Bench {
-        /// Execution kernel mode.
-        #[arg(long = "mode", value_enum, default_value_t = BenchMode::Soa)]
-        mode: BenchMode,
-        /// Number of deterministic seeds to execute.
-        #[arg(long = "seeds", default_value_t = 100)]
-        seeds: u64,
-        /// Pipeline items per seed.
-        #[arg(long = "items-per-seed", default_value_t = 250)]
-        items_per_seed: usize,
-    },
-    /// Execute a single deterministic seed and emit JSON for A/B differential parity.
-    ParitySeed {
-        /// Seed value.
-        #[arg(long = "seed")]
-        seed: u64,
-        /// Number of items to synthesize for this seed.
-        #[arg(long = "items", default_value_t = 64)]
-        items: usize,
-        /// Working directory for tracker and folder matching.
-        #[arg(long = "work-dir")]
-        work_dir: PathBuf,
-    },
-}
-
-/// Selects which Rust kernel executes in `gofile-dl bench`.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum BenchMode {
-    /// Stage 2 idiomatic Safe Rust (`run_seed_idiomatic`).
-    Safe,
-    /// Stage 3/4 Structure-of-Arrays + SIMD auto-vectorized arena (`run_seed_soa`).
-    Soa,
 }
 
 /// Terminal stderr progress reporter for interactive and scripted CLI downloads.
@@ -157,31 +122,13 @@ fn main() {
     }
 }
 
-/// Parses CLI arguments and dispatches to `serve`, `bench`, `parity-seed`, or legacy URL mode.
+/// Parses CLI arguments and dispatches to `serve` or one-shot CLI download mode.
 fn try_main() -> Result<(), GoFileError> {
     let mut cli = Cli::parse();
     match cli.command.take() {
         Some(Commands::Serve { config, host, port }) => run_server(&config, host, port),
-        Some(Commands::Bench {
-            mode,
-            seeds,
-            items_per_seed,
-        }) => run_bench(mode, seeds, items_per_seed),
-        Some(Commands::ParitySeed {
-            seed,
-            items,
-            work_dir,
-        }) => run_parity_seed(seed, items, &work_dir),
         None => dispatch_default_mode(cli),
     }
-}
-
-/// Runs a single deterministic seed via [`BatchArenaSoA`] and prints JSON for `legacy_bench_and_parity.py`.
-fn run_parity_seed(seed: u64, items: usize, work_dir: &Path) -> Result<(), GoFileError> {
-    let mut arena = BatchArenaSoA::with_capacity(items);
-    let res = run_seed_soa(seed, items, work_dir, &mut arena)?;
-    println!("{}", serde_json::to_string(&res)?);
-    Ok(())
 }
 
 /// Dispatches bare `gofile-dl` invocations: runs a CLI download if `URL` was supplied,
@@ -207,7 +154,7 @@ fn run_cli_download(url: &str, cli: Cli) -> Result<(), GoFileError> {
         chunk_size: 8192,
         throttle_kbps: cli.throttle_kbps,
         retry_attempts: cli.retries.min(10),
-        retry_delay_secs: 5,
+        retry_delay_secs: cli.retry_delay,
         strip_emojis: cli.strip_emojis,
         incremental: cli.incremental,
         folder_pattern: cli.folder_pattern,
@@ -218,37 +165,6 @@ fn run_cli_download(url: &str, cli: Cli) -> Result<(), GoFileError> {
         "[gofile-dl] Completed '{}': {} downloaded, {} skipped, {} failed",
         summary.root_name, summary.files_downloaded, summary.files_skipped, summary.files_failed
     );
-    Ok(())
-}
-
-fn run_bench(mode: BenchMode, seeds: u64, items_per_seed: usize) -> Result<(), GoFileError> {
-    let tmp_dir = std::env::temp_dir().join(format!("gofile_rs_bench_{}", std::process::id()));
-    let _ = fs::remove_dir_all(&tmp_dir);
-    fs::create_dir_all(&tmp_dir)?;
-
-    let mut combined = Sha256::new();
-    let mut total_sleep = 0.0_f64;
-    let mut arena = BatchArenaSoA::with_capacity(items_per_seed);
-
-    for s in 0..seeds {
-        let seed_dir = tmp_dir.join(format!("seed_{s}"));
-        let res = match mode {
-            BenchMode::Safe => run_seed_idiomatic(s, items_per_seed, &seed_dir)?,
-            BenchMode::Soa => run_seed_soa(s, items_per_seed, &seed_dir, &mut arena)?,
-        };
-        combined.update(res.digest.as_bytes());
-        total_sleep += res.total_throttle_sleep;
-    }
-
-    let _ = fs::remove_dir_all(&tmp_dir);
-    let digest_bytes: [u8; 32] = combined.finalize().into();
-    let out = json!({
-        "seeds": seeds,
-        "items_per_seed": items_per_seed,
-        "combined_digest": encode_sha256_hex(&digest_bytes),
-        "total_throttle_sleep": (total_sleep * 1e12).round() / 1e12,
-    });
-    println!("{out}");
     Ok(())
 }
 
@@ -272,7 +188,7 @@ fn run_server(
         config: cfg_arc,
         tasks,
         template_path: template_path.exists().then_some(template_path),
-        app_version: read_app_version(Path::new("version.txt")),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     let router = build_router(state);
 

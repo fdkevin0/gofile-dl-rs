@@ -1,18 +1,14 @@
 //! Cross-platform filename sanitization, Unicode emoji stripping, path-traversal
 //! confinement, and GoFile incremental folder-rename normalization.
 //!
-//! ## Safety & Bug Fixes Over Legacy Python
+//! ## Safety Guarantees
 //!
-//! 1. **CJK / Kana / Hangul Preservation**: Legacy `run.py:166` used the broken range
-//!    `\U000024C2-\U0001F251`, deleting all East Asian scripts. [`strip_emojis`]
-//!    restricts removal to genuine emoji/symbol/pictograph blocks while preserving
-//!    world scripts.
-//! 2. **Traversal Hardening**: Legacy `sanitize_filename("..")` returned `".."`.
-//!    [`safe_child_path`] ensures remote GoFile item names can never resolve to `.`,
-//!    `..`, or escape their parent download directory.
-//! 3. **Zero-Allocation Arena Helpers**: [`strip_emojis_into`], [`sanitize_filename_into`],
-//!    and [`FolderNormalizer::normalize_slice`] eliminate per-item heap allocations in
-//!    batch kernels.
+//! 1. **CJK / Kana / Hangul Preservation**: [`strip_emojis`] restricts removal to
+//!    genuine emoji/symbol/pictograph blocks while preserving world scripts.
+//! 2. **Traversal Hardening**: [`safe_child_path`] ensures remote GoFile item names
+//!    can never resolve to `.`, `..`, or escape their parent download directory.
+//! 3. **Zero-Allocation Helpers**: [`strip_emojis_into`], [`sanitize_filename_into`],
+//!    and [`FolderNormalizer::normalize_slice`] avoid per-item heap allocations.
 
 use crate::error::GoFileError;
 use regex::Regex;
@@ -24,10 +20,9 @@ use std::sync::OnceLock;
 /// Default pipe-separated folder prefixes stripped in incremental sync mode.
 pub const DEFAULT_FOLDER_PATTERNS: &str = "⭐NEW FILES in |NEW FILES in |⭐";
 
-/// Returns `true` if `ch` belongs to a Unicode emoji, dingbat, or pictograph range.
-///
-/// Unlike legacy `run.py`, this intentionally excludes CJK (`U+4E00..U+9FFF`),
-/// Hiragana/Katakana (`U+3040..U+30FF`), and Hangul (`U+AC00..U+D7AF`).
+/// Returns `true` if `ch` belongs to a Unicode emoji, dingbat, or pictograph range
+/// (intentionally excluding CJK `U+4E00..U+9FFF`, Hiragana/Katakana `U+3040..U+30FF`,
+/// and Hangul `U+AC00..U+D7AF`).
 ///
 /// # Examples
 ///
@@ -274,7 +269,7 @@ pub struct FolderNormalizer {
 
 impl FolderNormalizer {
     /// Compiles default GoFile `"NEW FILES in"` patterns plus optional pipe-delimited
-    /// `custom_patterns` (prepended in priority order, matching `run.py:202-216`).
+    /// `custom_patterns` (prepended in priority order).
     #[must_use]
     pub fn new(custom_patterns: Option<&str>) -> Self {
         let defaults = [
@@ -328,7 +323,7 @@ fn compile_custom_prefixes(custom_patterns: Option<&str>) -> Vec<String> {
             format!(r"(?i)^{escaped}\s*")
         })
         .collect();
-    // Legacy inserts each custom pattern at index 0 in loop order, reversing them.
+    // Insert each custom pattern at index 0 in loop order so later custom entries take precedence.
     custom_compiled.reverse();
     custom_compiled
 }
