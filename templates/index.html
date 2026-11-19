@@ -834,7 +834,6 @@
         const date = new Date(info.timestamp * 1000).toLocaleString();
         const isPaused = info.paused;
         const pauseButtonText = isPaused ? "Resume" : "Pause";
-        const safeTaskId = escapeHtml(taskId);
         const badgeHTML = `<span class="badge ${statusBadgeClass[info.status] || "bg-secondary"} task-badge">${escapeHtml(info.status)}</span>`;
 
         let totalSize = 0;
@@ -854,10 +853,10 @@
           <div class="d-flex justify-content-between card-header-flex">
             <h5 class="card-title">${escapeHtml(info.name)} ${sizeDisplay}</h5>
             <div>
-              <button class="btn btn-sm btn-secondary me-1" title="Remove from list" onclick="removeTask('${safeTaskId}')">
+              <button type="button" class="btn btn-sm btn-secondary me-1 js-remove-task" title="Remove from list">
                 <i class="bi bi-x-lg"></i>
               </button>
-              <button class="btn btn-sm btn-danger" title="Delete files from disk" onclick="deleteTask('${safeTaskId}')">
+              <button type="button" class="btn btn-sm btn-danger js-delete-task" title="Delete files from disk">
                 <i class="bi bi-trash"></i>
               </button>
             </div>
@@ -875,6 +874,12 @@
                   style="width: ${Number(info.progress) || 0}%;" aria-valuenow="${Number(info.progress) || 0}"
                   aria-valuemin="0" aria-valuemax="100">${Number(info.progress) || 0}%</div>
           </div>`;
+        body
+          .querySelector(".js-remove-task")
+          .addEventListener("click", () => removeTask(taskId));
+        body
+          .querySelector(".js-delete-task")
+          .addEventListener("click", () => deleteTask(taskId));
 
         if (info.files && info.files.length > 0) {
           const filesList = document.createElement("div");
@@ -947,15 +952,36 @@
         const terminal = ["completed", "error", "cancelled"].includes(
           info.status,
         );
-        controls.innerHTML = terminal
-          ? ""
-          : `
-          <button class="btn btn-warning btn-sm me-2" onclick="pauseTask('${safeTaskId}')">
-            <i class="bi bi-${isPaused ? "play" : "pause"} me-1"></i>${pauseButtonText}
-          </button>
-          <button class="btn btn-danger btn-sm" onclick="cancelTask('${safeTaskId}')">
-            <i class="bi bi-x-circle me-1"></i>Cancel
-          </button>`;
+        const hasFailedFiles =
+          Array.isArray(info.files) &&
+          info.files.some((f) => f.progress === -2);
+        const canRetry =
+          info.status === "error" ||
+          info.status === "cancelled" ||
+          (info.status === "completed" && hasFailedFiles);
+        if (!terminal) {
+          const pauseBtn = document.createElement("button");
+          pauseBtn.type = "button";
+          pauseBtn.className = "btn btn-warning btn-sm me-2";
+          pauseBtn.innerHTML = `<i class="bi bi-${isPaused ? "play" : "pause"} me-1"></i>${pauseButtonText}`;
+          pauseBtn.addEventListener("click", () => pauseTask(taskId));
+
+          const cancelBtn = document.createElement("button");
+          cancelBtn.type = "button";
+          cancelBtn.className = "btn btn-danger btn-sm";
+          cancelBtn.innerHTML = `<i class="bi bi-x-circle me-1"></i>Cancel`;
+          cancelBtn.addEventListener("click", () => cancelTask(taskId));
+
+          controls.appendChild(pauseBtn);
+          controls.appendChild(cancelBtn);
+        } else if (canRetry) {
+          const retryBtn = document.createElement("button");
+          retryBtn.type = "button";
+          retryBtn.className = "btn btn-primary btn-sm";
+          retryBtn.innerHTML = `<i class="bi bi-arrow-clockwise me-1"></i>Retry`;
+          retryBtn.addEventListener("click", () => retryTask(taskId));
+          controls.appendChild(retryBtn);
+        }
         body.appendChild(controls);
         card.appendChild(body);
         return card;
@@ -985,6 +1011,21 @@
             showToast("Task cancelled", "warning");
             loadTasks();
           });
+      }
+      function retryTask(taskId) {
+        fetch("/retry/" + encodeURIComponent(taskId), { method: "POST" })
+          .then((response) =>
+            response.json().then((data) => ({ ok: response.ok, data })),
+          )
+          .then(({ ok, data }) => {
+            if (!ok || data.error) {
+              showToast(data.error || "Failed to retry task", "danger");
+            } else {
+              showToast("Task retrying", "info");
+              loadTasks();
+            }
+          })
+          .catch(() => showToast("Failed to retry task", "danger"));
       }
       function pauseTask(taskId) {
         fetch("/pause/" + encodeURIComponent(taskId), { method: "POST" })

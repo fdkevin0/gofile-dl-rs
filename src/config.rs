@@ -101,6 +101,9 @@ pub struct AppConfig {
     /// Root download directory used by `/browse`, `/health`, and default downloads.
     #[serde(default = "default_base_dir")]
     pub base_dir: PathBuf,
+    /// Optional persistent state directory (`CONFIG_DIR`) for `tasks.json` and trackers.
+    #[serde(default)]
+    pub config_dir: Option<PathBuf>,
     /// Secret key used to sign stateless CSRF tokens.
     #[serde(default = "default_secret_key")]
     pub secret_key: String,
@@ -171,6 +174,7 @@ impl Default for AppConfig {
             port: default_port(),
             host: default_host(),
             base_dir: default_base_dir(),
+            config_dir: None,
             secret_key: default_secret_key(),
             default_retries: default_retries(),
             retry_delay: default_retry_delay(),
@@ -230,6 +234,9 @@ impl AppConfig {
         }
         if let Some(v) = non_empty_env(env, "BASE_DIR") {
             self.base_dir = PathBuf::from(v);
+        }
+        if let Some(v) = non_empty_env(env, "CONFIG_DIR") {
+            self.config_dir = Some(PathBuf::from(v));
         }
         if let Some(v) = non_empty_env(env, "SECRET_KEY") {
             self.secret_key = v.to_string();
