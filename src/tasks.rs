@@ -152,6 +152,10 @@ fn is_terminal_status(status: &str) -> bool {
     matches!(status, "completed" | "error" | "cancelled")
 }
 
+fn is_succeeded_task(snapshot: &TaskSnapshot) -> bool {
+    snapshot.status == "completed" && !snapshot.files.iter().any(|f| f.progress == -2)
+}
+
 fn now_epoch_secs() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -493,6 +497,24 @@ impl TaskManager {
             map.remove(task_id).is_some()
         };
         if removed {
+            self.persist_tasks();
+        }
+        removed
+    }
+
+    /// Removes all succeeded (`completed` with no failed files) tasks from the registry
+    /// without touching downloaded files on disk, returning the number of tasks removed.
+    #[must_use]
+    pub fn clear_completed_tasks(&self) -> usize {
+        let removed = {
+            let Ok(mut map) = self.inner.write() else {
+                return 0;
+            };
+            let before = map.len();
+            map.retain(|_, t| !is_succeeded_task(&t.snapshot));
+            before.saturating_sub(map.len())
+        };
+        if removed > 0 {
             self.persist_tasks();
         }
         removed
