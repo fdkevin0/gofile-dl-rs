@@ -1,6 +1,6 @@
 # GoFile Downloader (`gofile-dl`) — Safe Rust Edition
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/github/v/release/fdkevin0/gofile-dl-rs?color=blue)
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)
 ![Safety](https://img.shields.io/badge/unsafe-forbid-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)

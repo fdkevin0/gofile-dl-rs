@@ -75,7 +75,7 @@ fn test_config_env_overrides_and_invalid_port() {
 
     assert_eq!(
         read_app_version(Path::new("/nonexistent/version.txt")),
-        "0.1.0"
+        env!("CARGO_PKG_VERSION")
     );
 }
 
