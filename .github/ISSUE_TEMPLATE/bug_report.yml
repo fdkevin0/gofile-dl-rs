@@ -1,0 +1,42 @@
+name: Bug report
+description: Report unexpected behavior or a regression in gofile-dl
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Before submitting**: Never paste credentials, `GOFILE_PREMIUM_TOKEN`,
+        `SECRET_KEY`, `AUTH_PASSWORD`, CSRF tokens, or private GoFile share
+        links/passwords. Report security vulnerabilities privately via the
+        [Security tab](https://github.com/fdkevin0/gofile-dl-rs/security/advisories/new).
+  - type: input
+    id: version
+    attributes:
+      label: Version and environment
+      description: Version/image tag, OS, and deployment mode (CLI, native server, or Docker)
+      placeholder: "e.g., v0.1.0 (ghcr.io/fdkevin0/gofile-dl-rs:latest), Linux amd64, Docker"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Exact command, WebUI action, or sanitized configuration needed to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected vs. actual behavior
+      description: What you expected to happen and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or error output
+      description: Optional stderr/HTTP error output with secrets and private URLs removed
+      render: shell
+    validations:
+      required: false

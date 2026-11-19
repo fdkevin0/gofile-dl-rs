@@ -113,3 +113,11 @@ cargo clippy --all-targets -- -D warnings
 # Run deterministic 100-seed x 250-item SoA throughput benchmark
 ./target/release/gofile-dl bench --mode soa --seeds 100 --items-per-seed 250
 ```
+
+---
+
+## Community & Governance
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
