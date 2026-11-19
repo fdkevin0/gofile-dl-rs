@@ -7,20 +7,20 @@
 
 A high-performance, **100% Safe Rust** (`#![forbid(unsafe_code)]`) CLI and Web application for downloading files and nested folder structures from [GoFile.io](https://gofile.io).
 
-Rewritten in 100% Safe Rust from the original Python/Flask project [martadams89/gofile-dl](https://github.com/martadams89/gofile-dl), featuring Profile-Guided Optimization (PGO), Struct-of-Arrays (`BatchArenaSoA`) batch kernels, and bit-exact differential output parity.
+Originally ported from [martadams89/gofile-dl](https://github.com/martadams89/gofile-dl) to 100% Safe Rust.
 
 ---
 
-## Highlights & Architectural Improvements
+## Highlights
 
-- **100% Memory & Concurrency Safe**: Enforces `#![forbid(unsafe_code)]` across library and binary crates, replacing unprotected Python global thread state with `RwLock`-synchronized task registries, `TASK_EXPIRY` terminal task eviction, `X-CSRF-Token` session rotation, and lock-free `AtomicBool` pause/cancel controls.
+- **100% Memory & Concurrency Safe**: Enforces `#![forbid(unsafe_code)]` across library and binary crates with `RwLock`-synchronized task registries, `CONFIG_DIR/tasks.json` persistence, `TASK_EXPIRY` terminal task eviction, `X-CSRF-Token` session rotation, and lock-free `AtomicBool` pause/cancel/retry controls.
 - **2026 GoFile Dynamic `X-Website-Token` Support**: Computes rotating 4-hour `wt` SHA-256 tokens (`sha256(ua::lang::token::window::salt)`), automatically retries `-1` bucket boundaries on `error-notPremium`, backs off on `error-rateLimit`, and falls back to web session HTML extraction.
-- **Five Legacy Bugs Eliminated**:
+- **Resilient & Safe Transfers**:
   1. **Zero-Division Safe Transfers**: Handles chunked responses without `Content-Length` and `0`-byte files cleanly.
   2. **HTTP `206` vs `200` Resume Integrity**: Only appends `.part` files when storage servers honor `Range` with `206 Partial Content` (truncating cleanly on `200 OK`).
   3. **Honest Retry Failure Propagation**: Exhausted retries never mark missing files as `100%` or poison incremental `DownloadTracker` ledgers.
   4. **International Script Preservation**: `strip_emojis` removes Emoji/Dingbat/Pictograph codepoints without erasing CJK, Japanese Kana, or Korean Hangul characters.
-  5. **Direct `POST /` Form Handling & Traversal Confinement**: Eliminates the broken `POST / -> 302 /start -> 405` redirect and blocks `..` traversal in remote item names and `/browse`.
+  5. **Path Confinement**: Blocks `..` and symlink traversal escapes across downloads, `/browse`, and persisted task file deletion.
 
 ---
 
@@ -95,23 +95,13 @@ docker build -t gofile-dl:latest .
 
 ---
 
-## Verification, Parity & Benchmarks
-
-| Stage | Architecture / Profile | Wall Time (25k items) | Peak RSS | Speedup |
-| :--- | :--- | ---: | ---: | ---: |
-| **1. Legacy Baseline** | Python 3.12 (`run.py` / `app.py`) | `3,153.52 ms` | `29.92 MB` | `1.00x` |
-| **2. Safe Rust Port** | Idiomatic `#![forbid(unsafe_code)]` | `566.88 ms` | `6.96 MB` | `5.56x` |
-| **3. SoA + Zero-Alloc** | `BatchArenaSoA` + SHA-256 midstate + SIMD `f64` | `73.77 ms` | `7.04 MB` | `42.75x` |
-| **4. LLVM PGO + Fat LTO** | `-Cprofile-use` + `lto = "fat"` + `codegen-units = 1` | **`66.41 ms`** | **`6.21 MB`** | **`47.49x`** |
+## Development & Verification
 
 ```bash
-# Run unit, integration, proptest property fuzzing, and doc-tests (96.3% unfiltered LLVM line coverage)
-cargo test --all-targets
-cargo test --doc
-cargo clippy --all-targets -- -D warnings
-
-# Run deterministic 100-seed x 250-item SoA throughput benchmark
-./target/release/gofile-dl bench --mode soa --seeds 100 --items-per-seed 250
+cargo fmt --all -- --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --all-targets --locked
+cargo test --doc --locked
 ```
 
 ---

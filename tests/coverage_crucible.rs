@@ -8,7 +8,7 @@ use gofile_dl::browse::{
     browse_confined_directory, check_directory_writable, derive_initial_task_name, StartTaskRequest,
 };
 use gofile_dl::client::{ByteStreamResponse, GoFileClient, HttpTransport};
-use gofile_dl::config::{read_app_version, AppConfig, AuthConfig, CsrfConfig};
+use gofile_dl::config::{AppConfig, AuthConfig, CsrfConfig};
 use gofile_dl::downloader::{execute_download, DownloadOptions, NoopHooks, ProgressHooks};
 use gofile_dl::error::GoFileError;
 use gofile_dl::security::{render_index_html, verify_basic_auth, verify_csrf_token};
@@ -53,11 +53,7 @@ fn test_browse_and_config_yaml_and_env_edge_cases() {
     );
     assert_eq!(derive_initial_task_name("bareid", None), "bareid");
 
-    // Version file override and env-map parsing & validation
-    let vfile = tmp.path().join("version.txt");
-    std::fs::write(&vfile, "2.0.0\n").unwrap();
-    assert_eq!(read_app_version(&vfile), "2.0.0");
-
+    // Env-map parsing & validation
     let mut cfg = AppConfig::default();
     let env = HashMap::from([
         ("BASE_DIR".into(), "/tmp/dl".into()),

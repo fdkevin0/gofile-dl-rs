@@ -148,11 +148,6 @@
         </button>
       </div>
 
-      {% with messages = get_flashed_messages(with_categories=true) %} {% if
-      messages %} {% for category, message in messages %}
-      <div class="alert alert-{{ category }}">{{ message }}</div>
-      {% endfor %} {% endif %} {% endwith %}
-
       <div class="alert alert-info d-flex align-items-start gap-2" role="alert">
         <i class="bi bi-info-circle-fill mt-1"></i>
         <div>

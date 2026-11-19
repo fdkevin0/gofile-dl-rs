@@ -149,31 +149,14 @@ pub fn verify_basic_auth(auth_header: Option<&str>, auth_cfg: &AuthConfig) -> bo
 }
 
 /// Renders `templates/index.html` (preferring an on-disk override if present),
-/// injecting the live `csrf_token` and stripping unused Jinja flash blocks.
+/// injecting the live `csrf_token`.
 #[must_use]
 pub fn render_index_html(template_path: Option<&Path>, csrf_token: &str) -> String {
     let raw = template_path
         .and_then(|p| fs::read_to_string(p).ok())
         .unwrap_or_else(|| EMBEDDED_INDEX_HTML.to_string());
 
-    let with_csrf = raw.replace("{{ csrf_token() }}", csrf_token);
-    strip_jinja_flash_block(&with_csrf)
-}
-
-fn strip_jinja_flash_block(html: &str) -> String {
-    const START_TAG: &str = "{% with messages";
-    const END_TAG: &str = "{% endwith %}";
-    let Some(start) = html.find(START_TAG) else {
-        return html.to_string();
-    };
-    let Some(rel_end) = html[start..].find(END_TAG) else {
-        return html.to_string();
-    };
-    let end = start + rel_end + END_TAG.len();
-    let mut out = String::with_capacity(html.len() - (end - start));
-    out.push_str(&html[..start]);
-    out.push_str(&html[end..]);
-    out
+    raw.replace("{{ csrf_token() }}", csrf_token)
 }
 
 /// Parses an `application/x-www-form-urlencoded` payload into decoded key-value pairs.
@@ -229,7 +212,7 @@ fn decode_hex_pair(hi: u8, lo: u8) -> Option<u8> {
     Some(((h << 4) | l) as u8)
 }
 
-/// Safe `/health` host and application status payload matching `app.py:163-214`.
+/// Safe `/health` host and application status payload.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
     /// Overall health status (`"ok"`).

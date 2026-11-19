@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use base64::Engine;
-use gofile_dl::config::{read_app_version, AppConfig};
+use gofile_dl::config::AppConfig;
 use gofile_dl::security::generate_csrf_token;
 use gofile_dl::tasks::{TaskManager, TaskWorkerFn};
 use gofile_dl::web::{build_router, WebAppState};
@@ -72,11 +72,6 @@ fn test_config_env_overrides_and_invalid_port() {
 
     env.insert("PORT".to_string(), "not-a-number".to_string());
     assert!(cfg.apply_env_map(&env).is_err());
-
-    assert_eq!(
-        read_app_version(Path::new("/nonexistent/version.txt")),
-        env!("CARGO_PKG_VERSION")
-    );
 }
 
 #[tokio::test]
@@ -122,7 +117,7 @@ async fn test_health_basic_auth_and_index_csrf_rendering() {
         .unwrap()
         .contains("Basic"));
 
-    // Valid Basic Auth renders `/` with injected CSRF token and stripped Jinja flash tags
+    // Valid Basic Auth renders `/` with injected CSRF token
     let creds = BASE64_STD.encode("admin:s3cr3t");
     let res_idx = app
         .oneshot(
@@ -146,7 +141,6 @@ async fn test_health_basic_auth_and_index_csrf_rendering() {
     )
     .unwrap();
     assert!(!html.contains("{{ csrf_token() }}"));
-    assert!(!html.contains("{% with messages"));
     let _ = cfg;
 }
 

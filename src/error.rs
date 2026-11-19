@@ -1,9 +1,5 @@
 //! Strongly typed domain errors for GoFile authentication, content resolution,
 //! bandwidth throttling, filesystem safety, and retryable HTTP downloads.
-//!
-//! Replaces the legacy `errors.py` hierarchy (whose classes were defined in
-//! Python but never raised at call sites) with an exhaustive `Result<T, GoFileError>`
-//! model used across every client, downloader, configuration, and web operation.
 
 use std::error::Error;
 use std::fmt;
@@ -125,10 +121,8 @@ impl From<serde_json::Error> for GoFileError {
     }
 }
 
-/// Inspects an error message to detect GoFile API edge connection resets.
-///
-/// Matches the exact diagnostic substrings used by the legacy `_is_connection_reset`
-/// helper (`reset by peer`, `connection aborted`, `err_empty_response`, `recv failure`,
+/// Inspects an error message to detect GoFile API edge connection resets
+/// (`reset by peer`, `connection aborted`, `err_empty_response`, `recv failure`,
 /// `curl: (35)`, `curl: (56)`).
 ///
 /// # Examples

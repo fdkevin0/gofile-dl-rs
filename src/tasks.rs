@@ -1,10 +1,9 @@
 //! Thread-safe download task registry and background worker lifecycle manager.
 //!
-//! Replaces the legacy unprotected global `download_tasks` dictionary in `app.py:133`
-//! with an `Arc<RwLock<HashMap<String, ManagedTask>>>`, lock-free `AtomicBool`
-//! cancellation/pause flags, `Condvar`-synchronized file deletion, automatic
-//! eviction of expired terminal tasks (`task_expiry`), and atomic `tasks.json`
-//! persistence under `CONFIG_DIR`.
+//! Manages tasks in an `Arc<RwLock<HashMap<String, ManagedTask>>>` with lock-free
+//! `AtomicBool` cancellation/pause flags, `Condvar`-synchronized file deletion,
+//! automatic eviction of expired terminal tasks (`task_expiry`), and atomic
+//! `tasks.json` persistence under `CONFIG_DIR`.
 
 pub use crate::browse::{
     browse_confined_directory, check_directory_writable, derive_initial_task_name,

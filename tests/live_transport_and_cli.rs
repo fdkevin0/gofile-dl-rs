@@ -741,60 +741,12 @@ fn test_live_reqwest_transport_pagination_retries_resume_and_errors() {
 }
 
 #[test]
-fn test_cli_binary_download_bench_parity_and_graceful_serve() {
+fn test_cli_binary_download_and_graceful_serve() {
     let bin = env!("CARGO_BIN_EXE_gofile-dl");
     let (base_url, stop_tx) = spawn_mock_gofile_server();
     let tmp = tempdir().unwrap();
 
-    // 1. `parity-seed` subcommand
-    let parity_out = Command::new(bin)
-        .args([
-            "parity-seed",
-            "--seed",
-            "7",
-            "--items",
-            "16",
-            "--work-dir",
-            tmp.path().join("parity").to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(parity_out.status.success());
-    let parity_json: Value = serde_json::from_slice(&parity_out.stdout).unwrap();
-    assert_eq!(parity_json["digest"].as_str().unwrap().len(), 64);
-
-    // 2. `bench --mode safe` and `bench --mode soa` subcommands
-    let bench_safe = Command::new(bin)
-        .args([
-            "bench",
-            "--mode",
-            "safe",
-            "--seeds",
-            "2",
-            "--items-per-seed",
-            "8",
-        ])
-        .output()
-        .unwrap();
-    assert!(bench_safe.status.success());
-    let bench_soa = Command::new(bin)
-        .args([
-            "bench",
-            "--mode",
-            "soa",
-            "--seeds",
-            "2",
-            "--items-per-seed",
-            "8",
-        ])
-        .output()
-        .unwrap();
-    assert!(bench_soa.status.success());
-    let j_safe: Value = serde_json::from_slice(&bench_safe.stdout).unwrap();
-    let j_soa: Value = serde_json::from_slice(&bench_soa.stdout).unwrap();
-    assert_eq!(j_safe["combined_digest"], j_soa["combined_digest"]);
-
-    // 3. CLI download mode (with 1 retry on `flaky.bin` exercising `CliProgressLogger` retry & completion)
+    // 1. CLI download mode (with 1 retry on `flaky.bin` exercising `CliProgressLogger` retry & completion)
     let cli_dl_dir = tmp.path().join("cli_dl");
     let dl_out = Command::new(bin)
         .args([

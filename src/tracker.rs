@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// On-disk JSON schema compatible with legacy `.gofile_tracker_{id}.json` files.
+/// On-disk JSON schema for `.gofile_tracker_{id}.json` incremental sync files.
 #[derive(Debug, Serialize, Deserialize)]
 struct TrackerDiskPayload {
     content_id: String,
@@ -182,13 +182,6 @@ impl DownloadTracker {
         self.downloaded_files
             .insert(format!("{file_id}:{file_name}"));
         self.save_tracking_data()
-    }
-
-    /// Records `file_id:file_name` in memory without flushing immediately (used by batch arenas).
-    #[inline]
-    pub fn mark_downloaded_in_memory(&mut self, file_id: &str, file_name: &str) -> bool {
-        self.downloaded_files
-            .insert(format!("{file_id}:{file_name}"))
     }
 
     /// Searches `parent_dir` for either an exact folder match or a renamed folder whose
