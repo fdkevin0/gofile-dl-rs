@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.1](https://github.com/fdkevin0/gofile-dl-rs/compare/v0.1.0...v0.1.1) (2026-11-19)
+
+
+### Features
+
+* **web:** add one-click clear completed tasks action ([#5](https://github.com/fdkevin0/gofile-dl-rs/issues/5)) ([54844aa](https://github.com/fdkevin0/gofile-dl-rs/commit/54844aa8a53d0e8cd8783c1098ad5b973112a990))
+* **web:** add task retry button and CONFIG_DIR task persistence ([#1](https://github.com/fdkevin0/gofile-dl-rs/issues/1)) ([9e7afa0](https://github.com/fdkevin0/gofile-dl-rs/commit/9e7afa0dabf7b8760badb5a4da1d08e8f7b1cd7a))
+
+
+### Miscellaneous Chores
+
+* clean up legacy shims, hardcoded defaults, anti-pattern tests, and target v0.1.1 ([#6](https://github.com/fdkevin0/gofile-dl-rs/issues/6)) ([2d09001](https://github.com/fdkevin0/gofile-dl-rs/commit/2d0900132ca866310df032efbb557dd93cba4be0))
+
 ## [0.1.0](https://github.com/fdkevin0/gofile-dl-rs/releases/tag/v0.1.0) (2026-11-16)
 
 ### Features
