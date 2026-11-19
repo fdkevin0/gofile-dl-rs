@@ -59,6 +59,7 @@ cargo build --release
 
 ```bash
 # Run pre-built multi-arch image from GHCR (amd64 / arm64)
+# Use :latest for the latest stable release, or :main for rolling main builds
 docker run -d --name gofile-dl \
   -p 2355:2355 \
   -v "$(pwd)/downloads:/data" \
@@ -78,7 +79,7 @@ docker build -t gofile-dl:latest .
 | `PORT` | Web server TCP port | `2355` |
 | `HOST` | Web server bind address | `0.0.0.0` |
 | `BASE_DIR` | Root download & `/browse` directory | `./output` (`/data` in Docker) |
-| `CONFIG_DIR` | Directory for `.gofile_tracker_{id}.json` sync files | `/config` |
+| `CONFIG_DIR` | Directory for `tasks.json` persistence and `.gofile_tracker_{id}.json` sync files | unset (`/config` in Docker) |
 | `SECRET_KEY` | HMAC-SHA256 signing secret for stateless CSRF tokens | Random UUID |
 | `AUTH_ENABLED` | Enable HTTP Basic Authentication | `false` |
 | `AUTH_USERNAME` | Basic Auth username | `admin` |

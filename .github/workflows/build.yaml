@@ -35,7 +35,11 @@ jobs:
     secrets: inherit # pass all secrets to the called workflow
 
   build:
-    if: ${{ !startsWith(github.event.pull_request.title || github.event.head_commit.message || '', 'docs') }}
+    if: >-
+      ${{
+        !startsWith(github.event.pull_request.title || github.event.head_commit.message || '', 'docs')
+        && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && (startsWith(github.event.head_commit.message || '', 'chore(main): release') || startsWith(github.event.head_commit.message || '', 'chore: release')))
+      }}
     permissions:
       contents: read
       packages: write
@@ -43,5 +47,6 @@ jobs:
     needs: [test]
     secrets: inherit # pass all secrets to the called workflow
     with:
-      # publish only on push to main (releases are handled in release.yaml)
+      # Publish rolling :main image on push to main (semver & :latest are handled in release.yaml)
       publish: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      platforms: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
