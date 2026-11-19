@@ -185,9 +185,7 @@ impl TaskManager {
     /// Creates a manager with a custom worker closure (ideal for deterministic tests).
     #[must_use]
     pub fn with_worker(config: Arc<AppConfig>, worker: TaskWorkerFn) -> Self {
-        let store_path = config
-            .config_dir
-            .as_ref()
+        let store_path = effective_config_dir(config.config_dir.as_deref())
             .map(|dir| dir.join(TASK_STORE_FILENAME));
         let (initial_tasks, recovered) = store_path.as_deref().map_or_else(
             || (HashMap::new(), false),
@@ -393,6 +391,8 @@ impl TaskManager {
                     out_base: launch.out_base,
                     started_at: Instant::now(),
                     inner: Arc::clone(&inner),
+                    store_path: store_path.clone(),
+                    persist_lock: Arc::clone(&persist_lock),
                     cancelled: Arc::clone(&launch.cancelled),
                     paused: Arc::clone(&launch.paused),
                 });
@@ -574,9 +574,22 @@ fn run_live_task_worker(
         strip_emojis: req.strip_emojis,
         incremental: req.incremental,
         folder_pattern: req.folder_pattern,
-        config_dir: cfg.config_dir.clone(),
+        config_dir: resolve_tracker_config_dir(&cfg),
     };
     execute_download(&mut client, &req.url, &opts, hooks.as_ref()).map(|_| ())
+}
+
+fn effective_config_dir(dir: Option<&Path>) -> Option<&Path> {
+    dir.filter(|p| !p.to_string_lossy().trim().is_empty())
+}
+
+fn resolve_tracker_config_dir(cfg: &AppConfig) -> Option<PathBuf> {
+    let dir = effective_config_dir(cfg.config_dir.as_deref())?;
+    if check_directory_writable(dir).is_ok() {
+        Some(dir.to_path_buf())
+    } else {
+        Some(cfg.base_dir.join(".gofile_config"))
+    }
 }
 
 fn load_persisted_tasks(path: &Path, config: &AppConfig) -> (HashMap<String, ManagedTask>, bool) {
@@ -698,21 +711,31 @@ struct TaskProgressBridge {
     out_base: PathBuf,
     started_at: Instant,
     inner: Arc<RwLock<HashMap<String, ManagedTask>>>,
+    store_path: Option<PathBuf>,
+    persist_lock: Arc<Mutex<()>>,
     cancelled: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
 }
 
 impl ProgressHooks for TaskProgressBridge {
     fn on_name(&self, name: &str) {
-        let Ok(mut map) = self.inner.write() else {
-            return;
+        let updated = {
+            let Ok(mut map) = self.inner.write() else {
+                return;
+            };
+            if let Some(t) = map
+                .get_mut(&self.task_id)
+                .filter(|t| t.attempt == self.attempt)
+            {
+                t.snapshot.name = name.to_string();
+                t.snapshot.out_path = Some(self.out_base.join(name));
+                true
+            } else {
+                false
+            }
         };
-        if let Some(t) = map
-            .get_mut(&self.task_id)
-            .filter(|t| t.attempt == self.attempt)
-        {
-            t.snapshot.name = name.to_string();
-            t.snapshot.out_path = Some(self.out_base.join(name));
+        if updated {
+            persist_tasks_to_disk(&self.inner, self.store_path.as_deref(), &self.persist_lock);
         }
     }
 
@@ -806,5 +829,52 @@ fn upsert_file_record(
             size,
             retry_info: retry_info.map(str::to_owned),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracker_config_dir_handles_empty_writable_and_unwritable_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base_dir = tmp.path().join("data");
+        let writable_cfg = tmp.path().join("cfg");
+        let blocking_file = tmp.path().join("not_a_dir");
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::create_dir_all(&writable_cfg).unwrap();
+        fs::write(&blocking_file, b"file").unwrap();
+
+        let cfg_none = AppConfig {
+            base_dir: base_dir.clone(),
+            config_dir: None,
+            ..AppConfig::default()
+        };
+        assert_eq!(resolve_tracker_config_dir(&cfg_none), None);
+
+        let cfg_empty = AppConfig {
+            base_dir: base_dir.clone(),
+            config_dir: Some(PathBuf::from("   ")),
+            ..AppConfig::default()
+        };
+        assert_eq!(resolve_tracker_config_dir(&cfg_empty), None);
+
+        let cfg_ok = AppConfig {
+            base_dir: base_dir.clone(),
+            config_dir: Some(writable_cfg.clone()),
+            ..AppConfig::default()
+        };
+        assert_eq!(resolve_tracker_config_dir(&cfg_ok), Some(writable_cfg));
+
+        let cfg_unwritable = AppConfig {
+            base_dir: base_dir.clone(),
+            config_dir: Some(blocking_file),
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            resolve_tracker_config_dir(&cfg_unwritable),
+            Some(base_dir.join(".gofile_config"))
+        );
     }
 }

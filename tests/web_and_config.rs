@@ -975,6 +975,7 @@ async fn task_persistence_survives_restart_recovers_interrupted_and_scrubs_secre
     assert_eq!(restored[&tid_a]["name"], "SavedFolder");
     assert_eq!(restored[&tid_a]["files"].as_array().unwrap().len(), 1);
     assert_eq!(restored[&tid_b]["status"], "error");
+    assert_eq!(restored[&tid_b]["name"], "InFlightFolder");
     assert_eq!(
         restored[&tid_b]["error_message"],
         "Interrupted by server restart"

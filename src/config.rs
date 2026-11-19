@@ -215,7 +215,11 @@ impl AppConfig {
                 path.display()
             ))
         })?;
-        Ok(parsed.unwrap_or_default())
+        let mut cfg = parsed.unwrap_or_default();
+        cfg.config_dir = cfg
+            .config_dir
+            .filter(|p| !p.to_string_lossy().trim().is_empty());
+        Ok(cfg)
     }
 
     /// Applies environment overrides from an explicit key-value map (deterministic in tests).
@@ -301,4 +305,18 @@ pub fn read_app_version(version_file: &Path) -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yaml_empty_config_dir_normalizes_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let yaml_empty = tmp.path().join("empty_cfg.yml");
+        fs::write(&yaml_empty, "config_dir: \"   \"\n").unwrap();
+        let parsed = AppConfig::load_yaml_or_default(Some(&yaml_empty)).unwrap();
+        assert_eq!(parsed.config_dir, None);
+    }
 }
