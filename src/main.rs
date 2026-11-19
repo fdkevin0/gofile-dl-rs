@@ -53,6 +53,10 @@ struct Cli {
     #[arg(long = "retries", default_value_t = 3)]
     retries: u32,
 
+    /// Delay in seconds between transfer retry attempts.
+    #[arg(long = "retry-delay", env = "RETRY_DELAY", default_value_t = 5)]
+    retry_delay: u64,
+
     /// Strip emojis and pictographs from remote folder and file names.
     #[arg(long = "strip-emojis")]
     strip_emojis: bool,
@@ -207,7 +211,7 @@ fn run_cli_download(url: &str, cli: Cli) -> Result<(), GoFileError> {
         chunk_size: 8192,
         throttle_kbps: cli.throttle_kbps,
         retry_attempts: cli.retries.min(10),
-        retry_delay_secs: 5,
+        retry_delay_secs: cli.retry_delay,
         strip_emojis: cli.strip_emojis,
         incremental: cli.incremental,
         folder_pattern: cli.folder_pattern,

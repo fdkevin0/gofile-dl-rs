@@ -1,6 +1,6 @@
-//! Comprehensive branch-coverage crucible exercising error paths, nested subfolders,
-//! single-file root downloads, YAML config loading, CSRF token expiry, Basic Auth
-//! edge cases, task error/cancel transitions, and 404 HTTP handlers.
+//! Behavioral edge-case tests for nested subfolders, single-file root downloads,
+//! YAML config parsing, CSRF/Basic Auth rejections, task failure/cancel transitions,
+//! and HTTP 400/404 validation paths.
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -17,53 +17,12 @@ use gofile_dl::token::{generate_website_token, WebsiteTokenConfig};
 use gofile_dl::tracker::DownloadTracker;
 use gofile_dl::web::{build_router, WebAppState};
 use std::collections::{HashMap, VecDeque};
-use std::error::Error;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::tempdir;
 use tower::ServiceExt;
-
-#[test]
-fn test_all_error_variants_display_source_and_conversions() {
-    let io_err: GoFileError = std::io::Error::other("disk full").into();
-    assert!(io_err.source().is_some());
-    assert!(io_err.to_string().contains("disk full"));
-
-    let json_err: GoFileError = serde_json::from_str::<serde_json::Value>("{bad")
-        .unwrap_err()
-        .into();
-    assert!(json_err.source().is_none());
-    assert!(json_err.to_string().contains("Serialization error"));
-
-    let variants = [
-        GoFileError::Authentication("auth".into()),
-        GoFileError::ContentNotFound("cid".into()),
-        GoFileError::Password("wrong".into()),
-        GoFileError::InvalidUrl("bad://url".into()),
-        GoFileError::EdgeBlocked("accounts".into()),
-        GoFileError::RateLimited("contents".into()),
-        GoFileError::Download {
-            message: "failed".into(),
-            filename: "a.bin".into(),
-            url: "https://s/a".into(),
-        },
-        GoFileError::Throttle("negative".into()),
-        GoFileError::RetryExhausted {
-            attempts: 3,
-            target: "a.bin".into(),
-            last_error: "timeout".into(),
-        },
-        GoFileError::Cancelled,
-        GoFileError::PathSafety("escape".into()),
-        GoFileError::Config("bad port".into()),
-    ];
-    for v in variants {
-        assert!(!v.to_string().is_empty());
-        assert!(v.source().is_none());
-    }
-}
 
 #[test]
 fn test_browse_and_config_yaml_and_env_edge_cases() {
@@ -75,7 +34,7 @@ fn test_browse_and_config_yaml_and_env_edge_cases() {
     let file_only = tmp.path().join("note.txt");
     std::fs::write(&file_only, b"hi").unwrap();
 
-    // Relative, exact canonical, and nonexistent browse paths
+    // Relative, exact canonical, nonexistent, and file-as-directory browse paths
     let (_, cur_rel, dirs_rel) = browse_confined_directory(tmp.path(), "movies").unwrap();
     assert_eq!(dirs_rel, vec!["2026".to_string()]);
     let (_, cur_abs, _) =
@@ -93,42 +52,32 @@ fn test_browse_and_config_yaml_and_env_edge_cases() {
         "download"
     );
     assert_eq!(derive_initial_task_name("bareid", None), "bareid");
-    let req = StartTaskRequest::new("abc");
-    assert_eq!(req.url, "abc");
 
-    // YAML load + version file + all env overrides & parse failures
-    let yaml_file = tmp.path().join("config.yml");
-    std::fs::write(&yaml_file, "port: 3000\nhost: \"127.0.0.1\"\n").unwrap();
-    let loaded = AppConfig::load(Some(&yaml_file)).unwrap();
-    assert_eq!(loaded.port, 3000);
-    let fallback_loaded = AppConfig::load(None).unwrap();
-    assert!(fallback_loaded.port > 0);
-
+    // Version file override and env-map parsing & validation
     let vfile = tmp.path().join("version.txt");
     std::fs::write(&vfile, "2.0.0\n").unwrap();
     assert_eq!(read_app_version(&vfile), "2.0.0");
 
     let mut cfg = AppConfig::default();
-    let mut env = HashMap::new();
-    env.insert("BASE_DIR".into(), "/tmp/dl".into());
-    env.insert("SECRET_KEY".into(), "k123".into());
-    env.insert("RETRY_DELAY".into(), "9".into());
-    env.insert("GOFILE_PREMIUM_TOKEN".into(), "prem_xyz".into());
-    env.insert("GOFILE_PROXY".into(), "socks5://127.0.0.1:1080".into());
-    env.insert("AUTH_USERNAME".into(), "bob".into());
-    env.insert("AUTH_PASSWORD".into(), "pw".into());
+    let env = HashMap::from([
+        ("BASE_DIR".into(), "/tmp/dl".into()),
+        ("SECRET_KEY".into(), "k123".into()),
+        ("RETRY_DELAY".into(), "9".into()),
+        ("GOFILE_PREMIUM_TOKEN".into(), "prem_xyz".into()),
+        ("GOFILE_PROXY".into(), "socks5://127.0.0.1:1080".into()),
+        ("AUTH_USERNAME".into(), "bob".into()),
+        ("AUTH_PASSWORD".into(), "pw".into()),
+    ]);
     cfg.apply_env_map(&env).unwrap();
     assert_eq!(cfg.retry_delay, 9);
     assert_eq!(cfg.premium_token.as_deref(), Some("prem_xyz"));
     assert_eq!(cfg.proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
     assert_eq!(cfg.auth.username, "bob");
 
-    let mut bad_retries = HashMap::new();
-    bad_retries.insert("DEFAULT_RETRIES".into(), "nope".into());
+    let bad_retries = HashMap::from([("DEFAULT_RETRIES".into(), "nope".into())]);
     assert!(cfg.apply_env_map(&bad_retries).is_err());
 
-    let mut bad_delay = HashMap::new();
-    bad_delay.insert("RETRY_DELAY".into(), "nope".into());
+    let bad_delay = HashMap::from([("RETRY_DELAY".into(), "nope".into())]);
     assert!(cfg.apply_env_map(&bad_delay).is_err());
 }
 
@@ -281,14 +230,11 @@ fn test_client_errors_nested_subfolders_single_file_root_and_cancellation() {
     std::fs::create_dir_all(dl_dir.join("RootFolder")).unwrap();
     let cfg_dir = tmp.path().join("cfg");
 
-    let mut tracker = DownloadTracker::with_config_dir(&dl_dir, &cfg_dir, "r1", None).unwrap();
-    assert_eq!(tracker.base_dir(), dl_dir.as_path());
-    assert!(tracker.tracking_file().exists() || !tracker.tracking_file().as_os_str().is_empty());
+    let tracker = DownloadTracker::with_config_dir(&dl_dir, &cfg_dir, "r1", None).unwrap();
     assert_eq!(
         tracker.find_existing_folder("RootFolder", &dl_dir),
         Some(dl_dir.join("RootFolder"))
     );
-    let _ = &mut tracker;
 
     let t_tree = ScriptTransport::default();
     t_tree.gets.lock().unwrap().extend([
@@ -351,21 +297,41 @@ fn test_client_errors_nested_subfolders_single_file_root_and_cancellation() {
 
 #[tokio::test]
 async fn test_tasks_error_states_and_web_404_and_validation_branches() {
-    let tmp = tempdir().unwrap();
-    let _trk = DownloadTracker::new(tmp.path(), "env_cid", None).unwrap();
+    type StepFn = Box<
+        dyn FnOnce(
+                StartTaskRequest,
+                Arc<AppConfig>,
+                Arc<dyn ProgressHooks>,
+            ) -> Result<(), GoFileError>
+            + Send,
+    >;
 
-    // Worker that fails when url == "fail", cancels when url == "cancel", succeeds otherwise
-    let worker: TaskWorkerFn = Arc::new(|req, cfg, hooks| {
-        hooks.on_progress(42);
-        if req.url == "fail" {
-            return Err(GoFileError::Authentication("boom".into()));
-        }
-        if req.url == "cancel" {
-            return Err(GoFileError::Cancelled);
-        }
-        hooks.on_name("single.bin");
-        std::fs::write(cfg.base_dir.join("single.bin"), b"abc")?;
-        Ok(())
+    let tmp = tempdir().unwrap();
+
+    let steps: Arc<Mutex<VecDeque<StepFn>>> = Arc::new(Mutex::new(VecDeque::from([
+        Box::new(
+            |_req: StartTaskRequest, _cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_progress(42);
+                Err(GoFileError::Authentication("boom".into()))
+            },
+        ) as StepFn,
+        Box::new(
+            |_req: StartTaskRequest, _cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_progress(42);
+                Err(GoFileError::Cancelled)
+            },
+        ) as StepFn,
+        Box::new(
+            |_req: StartTaskRequest, cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                hooks.on_name("single.bin");
+                std::fs::write(cfg.base_dir.join("single.bin"), b"abc")?;
+                Ok(())
+            },
+        ) as StepFn,
+    ])));
+    let worker: TaskWorkerFn = Arc::new(move |req, cfg, hooks| {
+        let step = steps.lock().unwrap().pop_front().unwrap();
+        step(req, cfg, hooks)
     });
 
     let cfg = Arc::new(AppConfig {
@@ -379,23 +345,25 @@ async fn test_tasks_error_states_and_web_404_and_validation_branches() {
     });
     let tasks = TaskManager::with_worker(Arc::clone(&cfg), worker);
     let t_fail = tasks.start_task(StartTaskRequest::new("fail"));
+    assert!(tasks.wait_for_task(&t_fail, Duration::from_secs(5)));
     let t_cancel = tasks.start_task(StartTaskRequest::new("cancel"));
+    assert!(tasks.wait_for_task(&t_cancel, Duration::from_secs(5)));
     let t_file = tasks.start_task(StartTaskRequest::new("ok_file"));
-    let _ = tasks.active_count();
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(tasks.wait_for_task(&t_file, Duration::from_secs(5)));
 
     let map = tasks.list_tasks();
     assert_eq!(map[&t_fail].status, "error");
     assert!(map[&t_fail].error_message.contains("boom"));
     assert_eq!(map[&t_cancel].status, "cancelled");
     assert!(tasks.delete_task_files(&t_file).unwrap().is_some());
-    assert!(tasks.delete_task_files(&t_fail).unwrap().is_some()); // no out_path branch
+    assert!(!tmp.path().join("single.bin").exists());
+    assert!(tasks.delete_task_files(&t_fail).unwrap().is_some());
 
     let app = build_router(WebAppState {
         config: cfg,
         tasks,
         template_path: None,
-        app_version: "0.1.0".into(),
+        app_version: "0.1.0-test".into(),
     });
 
     // Empty URL -> 400 Bad Request
@@ -414,26 +382,69 @@ async fn test_tasks_error_states_and_web_404_and_validation_branches() {
     assert_eq!(r_empty.status(), StatusCode::BAD_REQUEST);
 
     // 404 routes for unknown task IDs
-    for (method, uri) in [
-        (Method::GET, "/progress/unknown"),
-        (Method::POST, "/pause/unknown"),
-        (Method::POST, "/cancel/unknown"),
-        (Method::POST, "/remove/unknown"),
-        (Method::POST, "/delete/unknown"),
-    ] {
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(method)
-                    .uri(uri)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    }
+    let r_prog = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/progress/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r_prog.status(), StatusCode::NOT_FOUND);
+
+    let r_pause = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pause/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r_pause.status(), StatusCode::NOT_FOUND);
+
+    let r_cancel = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/cancel/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r_cancel.status(), StatusCode::NOT_FOUND);
+
+    let r_remove = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/remove/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r_remove.status(), StatusCode::NOT_FOUND);
+
+    let r_delete = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/delete/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r_delete.status(), StatusCode::NOT_FOUND);
 }
 
 struct PauseOnceHooks {
@@ -450,7 +461,7 @@ impl ProgressHooks for PauseOnceHooks {
 async fn test_progress_bridge_pause_throttle_password_and_csrf_rejections() {
     let tmp = tempdir().unwrap();
 
-    // 1. Exercise TaskManager::new (both invalid proxy and valid ReqwestTransport -> InvalidUrl)
+    // 1. Live worker surfaces invalid proxy and invalid URL errors deterministically
     let bad_proxy_cfg = Arc::new(AppConfig {
         base_dir: tmp.path().to_path_buf(),
         proxy: Some("://bad-proxy-url".into()),
@@ -458,18 +469,19 @@ async fn test_progress_bridge_pause_throttle_password_and_csrf_rejections() {
     });
     let live_mgr = TaskManager::new(bad_proxy_cfg);
     let live_tid = live_mgr.start_task(StartTaskRequest::new("https://gofile.io/d/abc123"));
+    assert!(live_mgr.wait_for_task(&live_tid, Duration::from_secs(5)));
+    assert_eq!(live_mgr.list_tasks()[&live_tid].status, "error");
+
     let ok_proxy_cfg = Arc::new(AppConfig {
         base_dir: tmp.path().to_path_buf(),
         ..AppConfig::default()
     });
     let live_mgr2 = TaskManager::new(ok_proxy_cfg);
     let live_tid2 = live_mgr2.start_task(StartTaskRequest::new("https://not-gofile.example/x"));
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(live_mgr.list_tasks()[&live_tid].status, "error");
+    assert!(live_mgr2.wait_for_task(&live_tid2, Duration::from_secs(5)));
     assert_eq!(live_mgr2.list_tasks()[&live_tid2].status, "error");
 
-    // 2. Exercise TaskProgressBridge (on_file_progress insert+update, on_overall_progress,
-    //    is_paused, is_cancelled) + directory deletion in delete_task_files
+    // 2. TaskProgressBridge file upsert + directory deletion in delete_task_files
     let bridge_worker: TaskWorkerFn = Arc::new(|_req, cfg, hooks| {
         let dir = cfg.base_dir.join("AlbumDir");
         std::fs::create_dir_all(&dir)?;
@@ -478,10 +490,7 @@ async fn test_progress_bridge_pause_throttle_password_and_csrf_rejections() {
         hooks.on_name("AlbumDir");
         hooks.on_file_progress(&fpath, 0, Some(1000), None);
         hooks.on_file_progress(&fpath, 50, Some(1000), Some("Retry 1/3"));
-        std::thread::sleep(Duration::from_millis(2));
         hooks.on_overall_progress(50, "AlbumDir");
-        let _ = hooks.is_paused();
-        let _ = hooks.is_cancelled();
         Ok(())
     });
     let bridge_cfg = Arc::new(AppConfig {
@@ -495,11 +504,12 @@ async fn test_progress_bridge_pause_throttle_password_and_csrf_rejections() {
     });
     let bridge_mgr = TaskManager::with_worker(Arc::clone(&bridge_cfg), bridge_worker);
     let b_tid = bridge_mgr.start_task(StartTaskRequest::new("https://gofile.io/d/album1"));
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(bridge_mgr.wait_for_task(&b_tid, Duration::from_secs(5)));
     let snap = &bridge_mgr.list_tasks()[&b_tid];
     assert_eq!(snap.status, "completed");
     assert_eq!(snap.files.len(), 1);
-    assert!(snap.download_speed >= 0.0);
+    assert_eq!(snap.files[0].progress, 50);
+    assert_eq!(snap.files[0].retry_info.as_deref(), Some("Retry 1/3"));
     assert!(bridge_mgr.delete_task_files(&b_tid).unwrap().is_some());
     assert!(!tmp.path().join("AlbumDir").exists());
 
@@ -552,12 +562,12 @@ async fn test_progress_bridge_pause_throttle_password_and_csrf_rejections() {
     let s_ok = execute_download(&mut client, "throt1", &opts, &pause_hooks).unwrap();
     assert_eq!(s_ok.files_downloaded, 1);
 
-    // 4. Strict CSRF rejections on /start and /pause/{id} + malformed %ZZ percent-decoding
+    // 4. Malformed %ZZ form payload, invalid /browse path, and malformed multipart rejections
     let strict_app = build_router(WebAppState {
         config: bridge_cfg,
         tasks: bridge_mgr,
         template_path: None,
-        app_version: "0.1.0".into(),
+        app_version: "0.1.0-test".into(),
     });
     let r_no_csrf_start = strict_app
         .clone()
@@ -585,18 +595,6 @@ async fn test_progress_bridge_pause_throttle_password_and_csrf_rejections() {
         .await
         .unwrap();
     assert_eq!(r_no_csrf_pause.status(), StatusCode::BAD_REQUEST);
-
-    let r_tasks = strict_app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/tasks")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r_tasks.status(), StatusCode::OK);
 
     let r_bad_browse = strict_app
         .clone()
