@@ -258,6 +258,7 @@ impl TaskManager {
             timestamp: now_epoch_secs(),
             files: Vec::new(),
             paused: false,
+            password_required: false,
             out_path: None,
         };
 
@@ -294,6 +295,18 @@ impl TaskManager {
     /// original [`StartTaskRequest`] parameters.
     #[must_use]
     pub fn retry_task(&self, task_id: &str) -> RetryTaskStatus {
+        self.retry_task_with_password(task_id, None)
+    }
+
+    /// Restarts a terminal (`completed`, `error`, or `cancelled`) task in place, optionally
+    /// supplying or replacing its GoFile share password before re-running.
+    #[must_use]
+    pub fn retry_task_with_password(
+        &self,
+        task_id: &str,
+        password: Option<String>,
+    ) -> RetryTaskStatus {
+        let supplied_password = password.filter(|s| !s.is_empty());
         let launch = {
             let Ok(mut map) = self.inner.write() else {
                 return RetryTaskStatus::NotFound;
@@ -305,6 +318,9 @@ impl TaskManager {
                 return RetryTaskStatus::AlreadyActive;
             }
 
+            if let Some(pw) = supplied_password {
+                entry.request.password = Some(pw);
+            }
             let req = entry.request.clone();
             let out_base =
                 resolve_confined_output_dir(&self.config.base_dir, req.directory.as_deref())
@@ -325,9 +341,11 @@ impl TaskManager {
             entry.snapshot.download_speed = 0.0;
             entry.snapshot.status = "running".to_string();
             entry.snapshot.error_message.clear();
+            entry.snapshot.directory = Some(out_base.to_string_lossy().into_owned());
             entry.snapshot.timestamp = now_epoch_secs();
             entry.snapshot.files.clear();
             entry.snapshot.paused = false;
+            entry.snapshot.password_required = false;
 
             WorkerLaunch {
                 task_id: task_id.to_string(),
@@ -633,7 +651,20 @@ fn load_persisted_tasks(path: &Path, config: &AppConfig) -> (HashMap<String, Man
         if !is_terminal_status(&snapshot.status) {
             snapshot.status = "error".to_string();
             snapshot.error_message = INTERRUPTED_RESTART_MSG.to_string();
+            snapshot.password_required = false;
             recovered = true;
+        } else if snapshot.status == "error"
+            && snapshot.error_message.starts_with("Password error:")
+        {
+            snapshot.password_required = true;
+        }
+        if snapshot.directory.is_none() {
+            let out_base = resolve_confined_output_dir(
+                &config.base_dir,
+                persisted.request.directory.as_deref(),
+            )
+            .unwrap_or_else(|_| config.base_dir.clone());
+            snapshot.directory = Some(out_base.to_string_lossy().into_owned());
         }
         out.insert(
             task_id,
@@ -715,10 +746,13 @@ fn finalize_task_status(
         return;
     }
     let is_cancelled = cancelled.load(Ordering::Relaxed);
+    entry.snapshot.password_required = false;
     entry.snapshot.status = match result {
         Ok(()) if !is_cancelled => "completed".to_string(),
         Ok(()) | Err(GoFileError::Cancelled) => "cancelled".to_string(),
         Err(err) => {
+            entry.snapshot.password_required =
+                !is_cancelled && matches!(err, GoFileError::Password(_));
             entry.snapshot.error_message = err.to_string();
             if is_cancelled { "cancelled" } else { "error" }.to_string()
         }

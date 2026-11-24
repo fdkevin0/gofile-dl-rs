@@ -344,11 +344,52 @@ async fn handle_cancel(
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RetryPayload {
+    #[serde(default)]
+    password: Option<String>,
+}
+
+async fn decode_optional_retry_password(
+    state: &WebAppState,
+    headers: &HeaderMap,
+    req: Request,
+) -> Result<Option<String>, &'static str> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if content_type.starts_with("application/json") {
+        let bytes = Bytes::from_request(req, state)
+            .await
+            .map_err(|_| "Malformed JSON body")?;
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        let payload: RetryPayload =
+            serde_json::from_slice(&bytes).map_err(|_| "Malformed JSON body")?;
+        return Ok(payload.password.filter(|s| !s.is_empty()));
+    }
+
+    let fields = decode_form_fields(state, headers, req).await?;
+    Ok(fields.get("password").cloned().filter(|s| !s.is_empty()))
+}
+
 async fn handle_retry(
     State(state): State<WebAppState>,
     AxumPath(task_id): AxumPath<String>,
+    headers: HeaderMap,
+    req: Request,
 ) -> Response {
-    match state.tasks.retry_task(&task_id) {
+    let password = match decode_optional_retry_password(&state, &headers, req).await {
+        Ok(pw) => pw,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response();
+        }
+    };
+    match state.tasks.retry_task_with_password(&task_id, password) {
         RetryTaskStatus::Restarted => (
             StatusCode::ACCEPTED,
             Json(json!({"task_id": task_id, "status": "running"})),
