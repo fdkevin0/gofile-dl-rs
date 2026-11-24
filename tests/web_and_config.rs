@@ -1429,3 +1429,280 @@ async fn clear_completed_endpoint_removes_only_succeeded_tasks_keeps_files_and_p
     assert!(persisted_map.contains_key(&tid_fail));
     assert_eq!(persisted_map[&tid_active].status, "completed");
 }
+
+#[tokio::test]
+async fn password_required_error_allows_supplying_password_and_cards_expose_dest_dir() {
+    use gofile_dl::downloader::ProgressHooks;
+    use gofile_dl::error::GoFileError;
+    use gofile_dl::tasks::StartTaskRequest;
+    use std::collections::VecDeque;
+    use std::sync::{mpsc, Mutex};
+
+    type StepFn = Box<
+        dyn FnOnce(
+                StartTaskRequest,
+                Arc<AppConfig>,
+                Arc<dyn ProgressHooks>,
+            ) -> Result<(), GoFileError>
+            + Send,
+    >;
+
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path().join("data");
+    let config_dir = tmp.path().join("config");
+    std::fs::create_dir_all(base_dir.join("vault")).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let (req_tx, req_rx) = mpsc::channel::<StartTaskRequest>();
+    let tx1 = req_tx.clone();
+    let tx2 = req_tx.clone();
+    let tx3 = req_tx;
+    let steps: Arc<Mutex<VecDeque<StepFn>>> = Arc::new(Mutex::new(VecDeque::from([
+        Box::new(
+            move |req: StartTaskRequest, _cfg: Arc<AppConfig>, _hooks: Arc<dyn ProgressHooks>| {
+                tx1.send(req).unwrap();
+                Err(GoFileError::Password("passwordRequired".to_string()))
+            },
+        ) as StepFn,
+        Box::new(
+            move |req: StartTaskRequest, _cfg: Arc<AppConfig>, _hooks: Arc<dyn ProgressHooks>| {
+                tx2.send(req).unwrap();
+                Err(GoFileError::Password("passwordWrong".to_string()))
+            },
+        ) as StepFn,
+        Box::new(
+            move |req: StartTaskRequest, _cfg: Arc<AppConfig>, hooks: Arc<dyn ProgressHooks>| {
+                tx3.send(req).unwrap();
+                hooks.on_name("UnlockedFolder");
+                hooks.on_overall_progress(100, "UnlockedFolder");
+                Ok(())
+            },
+        ) as StepFn,
+    ])));
+    let worker: TaskWorkerFn = Arc::new(move |req, cfg, hooks| {
+        let step = steps.lock().unwrap().pop_front().unwrap();
+        step(req, cfg, hooks)
+    });
+
+    let cfg = Arc::new(AppConfig {
+        base_dir: base_dir.clone(),
+        config_dir: Some(config_dir.clone()),
+        secret_key: "pw-retry-secret".to_string(),
+        ..AppConfig::default()
+    });
+    let tasks = TaskManager::with_worker(Arc::clone(&cfg), worker);
+    let app = build_router(WebAppState {
+        config: Arc::clone(&cfg),
+        tasks: tasks.clone(),
+        template_path: None,
+        app_version: "0.1.1-test".to_string(),
+    });
+    let csrf = generate_csrf_token(&cfg.secret_key);
+
+    // Embedded WebUI template renders Dest directory and password retry modal.
+    let res_idx = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = String::from_utf8(
+        res_idx
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains("Dest: ${escapeHtml(info.directory)}"));
+    assert!(html.contains("id=\"passwordModal\""));
+    assert!(html.contains("info.password_required"));
+
+    // 1. Start without password -> fails with `Password error: passwordRequired`, exposes `password_required: true` and `directory`.
+    let res_start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/start")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("X-CSRFToken", &csrf)
+                .body(Body::from(
+                    "url=https%3A%2F%2Fgofile.io%2Fd%2Flocked01&directory=vault&retries=5&strip_emojis=true",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_start.status(), StatusCode::ACCEPTED);
+    let tid = read_json(res_start).await["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(tasks.wait_for_task(&tid, Duration::from_secs(5)));
+    let first_req = req_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(first_req.password, None);
+
+    let expected_dest = std::fs::canonicalize(base_dir.join("vault"))
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let snap1 = read_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/tasks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(snap1[&tid]["status"], "error");
+    assert_eq!(
+        snap1[&tid]["error_message"],
+        "Password error: passwordRequired"
+    );
+    assert_eq!(snap1[&tid]["password_required"], true);
+    assert_eq!(snap1[&tid]["directory"], expected_dest);
+
+    // 2. Malformed JSON on `/retry/{id}` returns 400 Bad Request.
+    let res_bad_json = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/retry/{tid}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRFToken", &csrf)
+                .body(Body::from("{not-json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_bad_json.status(), StatusCode::BAD_REQUEST);
+
+    // 3. Retry with wrong password via JSON -> fails with `passwordWrong`, stays `password_required: true`.
+    let res_wrong = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/retry/{tid}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRFToken", &csrf)
+                .body(Body::from(r#"{"password":"wrong-pw"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_wrong.status(), StatusCode::ACCEPTED);
+    assert!(tasks.wait_for_task(&tid, Duration::from_secs(5)));
+    let second_req = req_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(second_req.password.as_deref(), Some("wrong-pw"));
+
+    let snap2 = read_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/tasks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(snap2[&tid]["status"], "error");
+    assert_eq!(
+        snap2[&tid]["error_message"],
+        "Password error: passwordWrong"
+    );
+    assert_eq!(snap2[&tid]["password_required"], true);
+
+    // 4. Retry with correct password via JSON -> completes, clears `password_required`, preserves options, and never persists plaintext password.
+    let res_ok = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/retry/{tid}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRFToken", &csrf)
+                .body(Body::from(r#"{"password":"good-secret"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_ok.status(), StatusCode::ACCEPTED);
+    assert!(tasks.wait_for_task(&tid, Duration::from_secs(5)));
+    let third_req = req_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(third_req.password.as_deref(), Some("good-secret"));
+    assert_eq!(third_req.retries, 5);
+    assert!(third_req.strip_emojis);
+    assert_eq!(third_req.directory, first_req.directory);
+
+    let snap3 = read_json(
+        app.oneshot(
+            Request::builder()
+                .uri("/tasks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(snap3[&tid]["status"], "completed");
+    assert_eq!(snap3[&tid]["error_message"], "");
+    assert_eq!(snap3[&tid]["password_required"], false);
+    assert_eq!(snap3[&tid]["directory"], expected_dest);
+
+    let raw_store = std::fs::read_to_string(config_dir.join("tasks.json")).unwrap();
+    assert!(!raw_store.contains("good-secret"));
+    assert!(!raw_store.contains("wrong-pw"));
+
+    // 5. Legacy persisted `tasks.json` missing `password_required` and `directory` recovers both on load.
+    let legacy_store = serde_json::json!({
+        "version": 1,
+        "tasks": {
+            "legacy-locked": {
+                "snapshot": {
+                    "progress": 100,
+                    "overall_progress": 0,
+                    "current_folder": "N/A",
+                    "download_speed": 0.0,
+                    "status": "error",
+                    "error_message": "Password error: passwordRequired",
+                    "url": "https://gofile.io/d/legacy99",
+                    "name": "legacy99",
+                    "timestamp": 9_999_999_999.0,
+                    "files": [],
+                    "paused": false
+                },
+                "request": {
+                    "url": "https://gofile.io/d/legacy99",
+                    "directory": "vault",
+                    "retries": 3,
+                    "strip_emojis": false,
+                    "incremental": false,
+                    "folder_pattern": "NEW"
+                }
+            }
+        }
+    });
+    std::fs::write(
+        config_dir.join("tasks.json"),
+        serde_json::to_string(&legacy_store).unwrap(),
+    )
+    .unwrap();
+    let recovered = TaskManager::with_worker(cfg, Arc::new(|_, _, _| Ok(())));
+    let loaded = recovered.list_tasks();
+    assert!(loaded["legacy-locked"].password_required);
+    assert_eq!(
+        loaded["legacy-locked"].directory.as_deref(),
+        Some(expected_dest.as_str())
+    );
+}

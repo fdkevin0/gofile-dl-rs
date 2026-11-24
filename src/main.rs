@@ -6,14 +6,15 @@
 //! 2. **Web Dashboard Server**: `gofile-dl serve [--config config.yml] [--host H] [--port P]`
 
 use clap::{Parser, Subcommand};
-use gofile_dl::client::{GoFileClient, ReqwestTransport};
+use gofile_dl::client::{GoFileClient, HttpTransport, ReqwestTransport};
 use gofile_dl::config::AppConfig;
-use gofile_dl::downloader::{execute_download, DownloadOptions, ProgressHooks};
+use gofile_dl::downloader::{execute_download, DownloadOptions, DownloadSummary, ProgressHooks};
 use gofile_dl::error::GoFileError;
 use gofile_dl::sanitize::DEFAULT_FOLDER_PATTERNS;
 use gofile_dl::tasks::TaskManager;
 use gofile_dl::token::WebsiteTokenConfig;
 use gofile_dl::web::{build_router, WebAppState};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -140,6 +141,8 @@ fn dispatch_default_mode(cli: Cli) -> Result<(), GoFileError> {
     run_cli_download(&url, cli)
 }
 
+const MAX_PASSWORD_PROMPTS: usize = 3;
+
 /// Executes a one-shot CLI download and emits final summary counters to stderr.
 fn run_cli_download(url: &str, cli: Cli) -> Result<(), GoFileError> {
     let proxy = std::env::var("GOFILE_PROXY")
@@ -148,7 +151,7 @@ fn run_cli_download(url: &str, cli: Cli) -> Result<(), GoFileError> {
     let transport = ReqwestTransport::new(proxy.as_deref(), 45)?;
     let mut client =
         GoFileClient::new(transport, cli.premium_token, WebsiteTokenConfig::from_env());
-    let opts = DownloadOptions {
+    let mut opts = DownloadOptions {
         output_dir: cli.dir.unwrap_or_else(|| PathBuf::from("./output")),
         password: cli.password,
         chunk_size: 8192,
@@ -160,12 +163,66 @@ fn run_cli_download(url: &str, cli: Cli) -> Result<(), GoFileError> {
         folder_pattern: cli.folder_pattern,
         config_dir: None,
     };
-    let summary = execute_download(&mut client, url, &opts, &CliProgressLogger)?;
+    let summary = execute_download_with_password_prompt(
+        &mut client,
+        url,
+        &mut opts,
+        &CliProgressLogger,
+        prompt_cli_password,
+    )?;
     eprintln!(
         "[gofile-dl] Completed '{}': {} downloaded, {} skipped, {} failed",
         summary.root_name, summary.files_downloaded, summary.files_skipped, summary.files_failed
     );
     Ok(())
+}
+
+fn execute_download_with_password_prompt<T, F>(
+    client: &mut GoFileClient<T>,
+    url: &str,
+    opts: &mut DownloadOptions,
+    hooks: &dyn ProgressHooks,
+    mut prompt_password: F,
+) -> Result<DownloadSummary, GoFileError>
+where
+    T: HttpTransport,
+    F: FnMut(&str) -> Option<String>,
+{
+    let mut attempts = 0usize;
+    loop {
+        match execute_download(client, url, opts, hooks) {
+            Ok(summary) => return Ok(summary),
+            Err(GoFileError::Password(status)) if attempts < MAX_PASSWORD_PROMPTS => {
+                attempts += 1;
+                if let Some(pw) = prompt_password(&status).filter(|s| !s.is_empty()) {
+                    opts.password = Some(pw);
+                    continue;
+                }
+                return Err(GoFileError::Password(status));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn prompt_cli_password(status: &str) -> Option<String> {
+    if status == "passwordWrong" {
+        eprint!("[gofile-dl] Incorrect password. Enter password (empty to cancel): ");
+    } else {
+        eprint!("[gofile-dl] Password required ({status}). Enter password (empty to cancel): ");
+    }
+    let _ = io::stderr().flush();
+
+    let mut line = String::new();
+    let bytes = io::stdin().lock().read_line(&mut line).ok()?;
+    if bytes == 0 {
+        eprintln!();
+        return None;
+    }
+    while line.ends_with(['\r', '\n']) {
+        line.pop();
+    }
+    (!line.is_empty()).then_some(line)
 }
 
 fn run_server(

@@ -59,6 +59,9 @@ pub struct TaskSnapshot {
     pub files: Vec<FileProgressRecord>,
     /// True if currently paused.
     pub paused: bool,
+    /// True when the task failed due to a missing or incorrect GoFile share password.
+    #[serde(default)]
+    pub password_required: bool,
     /// Resolved output path on disk (used by `/delete/{task_id}`).
     #[serde(skip_serializing)]
     pub out_path: Option<PathBuf>,

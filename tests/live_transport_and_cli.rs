@@ -14,7 +14,9 @@ use gofile_dl::error::GoFileError;
 use gofile_dl::sanitize::sanitize_filename;
 use gofile_dl::security::{build_health_response, generate_csrf_token, verify_csrf_token};
 use gofile_dl::tasks::{TaskManager, TaskWorkerFn};
-use gofile_dl::token::{generate_website_token_at, parse_content_id, WebsiteTokenConfig};
+use gofile_dl::token::{
+    generate_website_token_at, hash_password, parse_content_id, WebsiteTokenConfig,
+};
 use gofile_dl::tracker::DownloadTracker;
 use gofile_dl::transfer::{download_file, part_file_path, remove_path_and_part};
 use gofile_dl::transport::extract_embedded_content_json;
@@ -24,7 +26,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpListener as StdTcpListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -106,6 +108,32 @@ async fn mock_contents(
 ) -> Response {
     if id == "notfound404" {
         return (StatusCode::NOT_FOUND, "<html>404 not found</html>").into_response();
+    }
+    if id == "locked123" {
+        let expected_hash = hash_password("secret42");
+        let pw_status = match q.get("password").map(String::as_str) {
+            None | Some("") => "passwordRequired",
+            Some(h) if h == expected_hash => "passwordOk",
+            Some(_) => "passwordWrong",
+        };
+        return axum::Json(json!({
+            "status": "ok",
+            "data": {
+                "type": "folder",
+                "name": "LockedShare",
+                "passwordStatus": pw_status,
+                "childrenCount": 1,
+                "children": {
+                    "file-locked": {
+                        "type": "file",
+                        "name": "hello.bin",
+                        "link": format!("{}/download/hello.bin", st.base_url),
+                        "size": 10
+                    }
+                }
+            }
+        }))
+        .into_response();
     }
     if id == "htmlfb" {
         return axum::Json(json!({ "status": "error-notPremium" })).into_response();
@@ -773,6 +801,93 @@ fn test_cli_binary_download_and_graceful_serve() {
         std::fs::read(cli_dl_dir.join("Share_cli123").join("flaky.bin")).unwrap(),
         b"0123456789"
     );
+
+    // 2. CLI password-protected share without `-p` and closed stdin exits 1 with `Password error: passwordRequired`
+    let locked_fail_dir = tmp.path().join("cli_locked_fail");
+    let locked_fail = Command::new(bin)
+        .env_clear()
+        .env("HOME", tmp.path())
+        .env("GOFILE_API_BASE_URL", &base_url)
+        .env("GOFILE_WEB_BASE_URL", &base_url)
+        .args([
+            "https://gofile.io/d/locked123",
+            "-d",
+            locked_fail_dir.to_str().unwrap(),
+            "--retry-delay",
+            "0",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(locked_fail.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&locked_fail.stderr).contains("Password error: passwordRequired")
+    );
+
+    // 3. CLI password-protected share prompts for password when `passwordRequired`, handles wrong then valid password
+    let locked_ok_dir = tmp.path().join("cli_locked_ok");
+    let mut locked_child = Command::new(bin)
+        .env_clear()
+        .env("HOME", tmp.path())
+        .env("GOFILE_API_BASE_URL", &base_url)
+        .env("GOFILE_WEB_BASE_URL", &base_url)
+        .args([
+            "https://gofile.io/d/locked123",
+            "-d",
+            locked_ok_dir.to_str().unwrap(),
+            "--retry-delay",
+            "0",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    locked_child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"wrong-pass\nsecret42\n")
+        .unwrap();
+    let locked_ok = locked_child.wait_with_output().unwrap();
+    assert!(
+        locked_ok.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&locked_ok.stderr)
+    );
+    assert_eq!(
+        std::fs::read(locked_ok_dir.join("LockedShare").join("hello.bin")).unwrap(),
+        b"0123456789"
+    );
+
+    // 3b. CLI stops prompting after MAX_PASSWORD_PROMPTS (3) consecutive wrong passwords
+    let locked_cap_dir = tmp.path().join("cli_locked_cap");
+    let mut cap_child = Command::new(bin)
+        .env_clear()
+        .env("HOME", tmp.path())
+        .env("GOFILE_API_BASE_URL", &base_url)
+        .env("GOFILE_WEB_BASE_URL", &base_url)
+        .args([
+            "https://gofile.io/d/locked123",
+            "-d",
+            locked_cap_dir.to_str().unwrap(),
+            "--retry-delay",
+            "0",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    cap_child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"w1\nw2\nw3\nsecret42\n")
+        .unwrap();
+    let cap_out = cap_child.wait_with_output().unwrap();
+    assert_eq!(cap_out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&cap_out.stderr).contains("Password error: passwordWrong"));
 
     // 4. Invalid URL exits with code 1
     let bad_out = Command::new(bin)
