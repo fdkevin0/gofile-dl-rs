@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/fdkevin0/gofile-dl-rs/compare/v0.1.1...v0.2.0) (2026-11-24)
+
+
+### Features
+
+* allow supplying password on passwordRequired and show dest dir on task cards ([#7](https://github.com/fdkevin0/gofile-dl-rs/issues/7)) ([5d2d97c](https://github.com/fdkevin0/gofile-dl-rs/commit/5d2d97c17664a3727ae71cd22ca8200e04b85317))
+
 ## [0.1.1](https://github.com/fdkevin0/gofile-dl-rs/compare/v0.1.0...v0.1.1) (2026-11-19)
 
 
